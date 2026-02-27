@@ -1,0 +1,17 @@
+services:
+  dockertab-agent:
+    image: 191855/dockertab-agent:latest
+    container_name: dockertab-agent
+    restart: unless-stopped
+    ports:
+      - "8377:8377"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - dockertab-config:/root/.config/dockertab
+    environment:
+      - DOCKERTAB_HOST=${DOCKERTAB_HOST:?Set DOCKERTAB_HOST to your server LAN IP — e.g. echo "DOCKERTAB_HOST=192.168.1.x" > .env}
+      - DOCKERTAB_NAME=${DOCKERTAB_NAME:-DockerTab}
+      - DOCKERTAB_RELAY_TOKEN=${DOCKERTAB_RELAY_TOKEN:-}
+
+volumes:
+  dockertab-config:
