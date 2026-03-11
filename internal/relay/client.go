@@ -27,6 +27,9 @@ import (
 // validContainerID matches Docker container IDs (hex) and container names.
 var validContainerID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.\-]{0,127}$`)
 
+// containerPathRe extracts the container ID from /api/v1/containers/{id}/...
+var containerPathRe = regexp.MustCompile(`^/api/v1/containers/([^/]+)/`)
+
 type streamEntry struct {
 	clientID string
 	cancel   context.CancelFunc
@@ -442,11 +445,11 @@ func (c *Client) handleStreamOpen(ctx context.Context, env Envelope) {
 	}()
 
 	// e.g. /api/v1/containers/{id}/logs/stream, /stats/stream, /exec
-	parts := strings.Split(strings.TrimPrefix(payload.Path, "/"), "/")
-	if len(parts) < 4 {
+	matches := containerPathRe.FindStringSubmatch(payload.Path)
+	if len(matches) < 2 {
 		return
 	}
-	containerID := parts[3]
+	containerID := matches[1]
 	if !validContainerID.MatchString(containerID) {
 		log.Printf("[relay] rejected invalid container ID: %q", containerID)
 		return

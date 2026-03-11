@@ -381,8 +381,12 @@ func TestStreamContainerExec_AllShellsFail(t *testing.T) {
 		conn.SetReadDeadline(time.Now().Add(time.Second))
 		_, msg, err := conn.ReadMessage()
 		conn.Close()
-		if err == nil && len(msg) == 0 {
-			t.Error("expected error message from handler when all shells fail")
+		if err != nil {
+			t.Logf("read error (may be expected): %v", err)
+		} else if len(msg) == 0 {
+			t.Error("expected non-empty error message from handler when all shells fail")
+		} else if !strings.Contains(string(msg), "error") {
+			t.Errorf("expected error JSON, got: %s", msg)
 		}
 	}
 }

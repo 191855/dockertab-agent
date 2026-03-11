@@ -1,7 +1,7 @@
 .PHONY: setup up down logs
 
 # Detect the host's LAN IP (works on macOS and Linux)
-HOST_IP := $(shell ipconfig getifaddr en0 2>/dev/null || ip route get 1 | awk '{print $$7; exit}')
+HOST_IP := $(shell ipconfig getifaddr en0 2>/dev/null || ip -4 route get 1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($$i=="src"){print $$(i+1); exit}}')
 
 ## setup: write .env with the auto-detected LAN IP
 setup:

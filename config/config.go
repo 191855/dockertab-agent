@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -66,7 +68,11 @@ func Load() (*Config, error) {
 		}
 
 		if v := os.Getenv("DOCKERTAB_PORT"); v != "" {
-			fmt.Sscanf(v, "%d", &instance.Port)
+			if port, err := strconv.Atoi(v); err == nil && port > 0 && port <= 65535 {
+				instance.Port = port
+			} else {
+				fmt.Fprintf(os.Stderr, "warning: invalid DOCKERTAB_PORT %q, using default %d\n", v, instance.Port)
+			}
 		}
 		if v := os.Getenv("DOCKERTAB_BIND"); v != "" {
 			instance.BindAddr = v
@@ -126,11 +132,8 @@ func Load() (*Config, error) {
 		// Always prefer the compiled-in default so stale saved values don't persist
 		// across binary updates. Explicit custom URLs (via env or config) are preserved.
 		knownDefaults := []string{"", "wss://relay.dockertab.app"}
-		for _, old := range knownDefaults {
-			if instance.RelayURL == old {
-				instance.RelayURL = DefaultRelayURL
-				break
-			}
+		if slices.Contains(knownDefaults, instance.RelayURL) {
+			instance.RelayURL = DefaultRelayURL
 		}
 
 		if err := instance.Save(); err != nil {

@@ -1,6 +1,9 @@
 package relay
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"log"
+)
 
 // Message types exchanged over the relay WebSocket tunnel.
 const (
@@ -102,10 +105,11 @@ type RegisterAPNsPayload struct {
 	Environment string `json:"environment"` // "development" | "production"
 }
 
-func MustMarshal(v interface{}) json.RawMessage {
+func MustMarshal(v any) json.RawMessage {
 	data, err := json.Marshal(v)
 	if err != nil {
-		panic("relay: failed to marshal payload: " + err.Error())
+		log.Printf("[relay] failed to marshal payload: %v", err)
+		return json.RawMessage(`{}`)
 	}
 	return data
 }

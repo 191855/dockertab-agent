@@ -2,6 +2,7 @@ package notifications
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -49,6 +50,10 @@ func (w *Watcher) Start(ctx context.Context) error {
 			log.Println("[Notifications] Docker events watcher stopped")
 			return nil
 		case err := <-errs:
+			if ctx.Err() != nil {
+				log.Println("[Notifications] Docker events watcher stopped")
+				return nil
+			}
 			return fmt.Errorf("docker events stream: %w", err)
 		case msg, ok := <-messages:
 			if !ok {
@@ -128,7 +133,13 @@ func (w *Watcher) push(ctx context.Context, containerID, name, action string) {
 	for _, record := range tokens {
 		sandbox := w.sandbox || record.Environment == "development"
 		if err := w.client.Push(ctx, record.Token, title, body, containerID, name, w.agentID, sandbox); err != nil {
-			log.Printf("[Notifications] push failed: %v", err)
+			var expired *TokenExpiredError
+			if errors.As(err, &expired) {
+				log.Printf("[Notifications] removing expired token %.16s...", expired.DeviceToken)
+				w.store.UnregisterByToken(expired.DeviceToken)
+			} else {
+				log.Printf("[Notifications] push failed: %v", err)
+			}
 		}
 	}
 }

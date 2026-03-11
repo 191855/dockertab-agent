@@ -47,7 +47,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect to Docker: %v", err)
 	}
-	defer dockerClient.Close()
 
 	log.Println("Connected to Docker daemon")
 
@@ -87,7 +86,7 @@ func main() {
 	api := router.Group("/api/v1")
 	api.Use(middleware.JWTAuth(authService))
 	{
-			api.GET("/host", handler.GetHostInfo)
+		api.GET("/host", handler.GetHostInfo)
 
 		api.GET("/containers", handler.ListContainers)
 		api.GET("/containers/:id", handler.GetContainer)

@@ -19,6 +19,17 @@ import (
 
 const apnsBundleID = "com.dockertab.app"
 
+// TokenExpiredError is returned when APNs responds with 410 (Unregistered),
+// indicating the device token is no longer valid and should be removed.
+type TokenExpiredError struct {
+	DeviceToken string
+	Reason      string
+}
+
+func (e *TokenExpiredError) Error() string {
+	return fmt.Sprintf("APNs token expired: %s", e.Reason)
+}
+
 type APNsClient struct {
 	keyID  string
 	teamID string
@@ -152,6 +163,9 @@ func (c *APNsClient) Push(ctx context.Context, deviceToken, title, body, contain
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&apnsErr)
 		log.Printf("[APNs] push failed: status=%d reason=%s token=%.16s...", resp.StatusCode, apnsErr.Reason, deviceToken)
+		if resp.StatusCode == http.StatusGone {
+			return &TokenExpiredError{DeviceToken: deviceToken, Reason: apnsErr.Reason}
+		}
 		return fmt.Errorf("APNs %d: %s", resp.StatusCode, apnsErr.Reason)
 	}
 

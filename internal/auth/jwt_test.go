@@ -7,7 +7,7 @@ import (
 
 func TestNewService_Expiration(t *testing.T) {
 	svc := NewService("test-secret")
-	expected := 30 * 24 * time.Hour
+	expected := 180 * 24 * time.Hour
 	if svc.expiration != expected {
 		t.Fatalf("expected expiration %v, got %v", expected, svc.expiration)
 	}
@@ -90,7 +90,7 @@ func TestValidateToken_IssuerClaim(t *testing.T) {
 	}
 }
 
-func TestToken_ExpiresAtIs30Days(t *testing.T) {
+func TestToken_ExpiresAtIs180Days(t *testing.T) {
 	svc := NewService("test-secret")
 	before := time.Now()
 	token, _ := svc.GenerateToken("device-1", "iPhone")
@@ -102,9 +102,9 @@ func TestToken_ExpiresAtIs30Days(t *testing.T) {
 	}
 
 	expiresAt := claims.ExpiresAt.Time
-	lower := before.Add(30 * 24 * time.Hour).Add(-time.Second)
-	upper := after.Add(30 * 24 * time.Hour).Add(time.Second)
+	lower := before.Add(180 * 24 * time.Hour).Add(-time.Second)
+	upper := after.Add(180 * 24 * time.Hour).Add(time.Second)
 	if expiresAt.Before(lower) || expiresAt.After(upper) {
-		t.Errorf("expected expiry around 30 days from now, got %v", expiresAt)
+		t.Errorf("expected expiry around 180 days from now, got %v", expiresAt)
 	}
 }

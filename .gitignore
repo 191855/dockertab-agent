@@ -3,7 +3,8 @@ dockertab-agent
 
 # Runtime config (contains generated secrets — never commit)
 .env
-*.json
+dockertab-agent.json
+device-tokens.json
 
 # macOS
 .DS_Store

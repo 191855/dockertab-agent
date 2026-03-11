@@ -32,19 +32,31 @@ func NewTokenStore(configDir string) *TokenStore {
 
 func (ts *TokenStore) Register(deviceID, token, environment string) {
 	ts.mu.Lock()
-	defer ts.mu.Unlock()
 	ts.tokens[deviceID] = DeviceRecord{
 		Token:        token,
 		Environment:  environment,
 		RegisteredAt: time.Now(),
 	}
+	ts.mu.Unlock()
 	ts.save()
 }
 
 func (ts *TokenStore) Unregister(deviceID string) {
 	ts.mu.Lock()
-	defer ts.mu.Unlock()
 	delete(ts.tokens, deviceID)
+	ts.mu.Unlock()
+	ts.save()
+}
+
+func (ts *TokenStore) UnregisterByToken(token string) {
+	ts.mu.Lock()
+	for id, r := range ts.tokens {
+		if r.Token == token {
+			delete(ts.tokens, id)
+			break
+		}
+	}
+	ts.mu.Unlock()
 	ts.save()
 }
 
@@ -69,8 +81,11 @@ func (ts *TokenStore) load() {
 }
 
 func (ts *TokenStore) save() {
+	ts.mu.RLock()
 	data, err := json.MarshalIndent(ts.tokens, "", "  ")
+	ts.mu.RUnlock()
 	if err != nil {
+		log.Printf("[tokenstore] marshal failed: %v", err)
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(ts.path), 0700); err != nil {
