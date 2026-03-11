@@ -135,6 +135,14 @@ If you'd rather skip the volume, just set `DOCKERTAB_API_KEY` and `DOCKERTAB_JWT
 
 ---
 
+## Push Notifications
+
+Container start, stop, and restart events are delivered to your iPhone via the DockerTab relay server. The agent connects to the relay over WebSocket and forwards Docker events — no inbound ports or firewall rules needed on your server.
+
+The relay acts as a stateless passthrough. Event payloads are forwarded to APNs and immediately discarded — nothing is stored, logged, or used beyond delivering the notification.
+
+---
+
 ## Troubleshooting
 
 **QR code shows `0.0.0.0`**: set `DOCKERTAB_HOST` to your server's LAN IP.
