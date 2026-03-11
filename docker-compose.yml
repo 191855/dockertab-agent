@@ -1,0 +1,15 @@
+services:
+  dockertab-agent:
+    image: ghcr.io/191855/dockertab-agent:latest
+    container_name: dockertab-agent
+    restart: unless-stopped
+    ports:
+      - "8377:8377"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - dockertab-config:/root/.config/dockertab
+    environment:
+      - DOCKERTAB_HOST=${DOCKERTAB_HOST}
+      - DOCKERTAB_NAME=${DOCKERTAB_NAME:-DockerTab}
+volumes:
+  dockertab-config:

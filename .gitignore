@@ -1,0 +1,16 @@
+# Build output
+dockertab-agent
+
+# Runtime config (contains generated secrets — never commit)
+.env
+dockertab-agent.json
+device-tokens.json
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
