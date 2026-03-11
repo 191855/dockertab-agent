@@ -135,6 +135,19 @@ If you'd rather skip the volume, just set `DOCKERTAB_API_KEY` and `DOCKERTAB_JWT
 
 ---
 
+## Push Notifications & Remote Access
+
+Push notifications and remote access (outside your home network) are **DockerTab Premium** features, powered by the DockerTab relay — operated by DockerTab.
+
+The agent maintains a persistent WebSocket connection to the relay. This serves two purposes:
+
+- **Push notifications** — container start, stop, and restart events are forwarded to APNs and delivered to your iPhone, even when you're away from home.
+- **Remote access** — when your phone is outside your LAN, the relay proxies API requests to your agent so you can manage containers from anywhere without exposing your server to the internet.
+
+**Privacy:** The relay is stateless. It forwards requests and notification payloads without storing or retaining any data. Only the minimum information needed to deliver a notification (container name, action, agent ID) is ever transmitted — no logs, no environment variables, no sensitive data.
+
+---
+
 ## Troubleshooting
 
 **QR code shows `0.0.0.0`**: set `DOCKERTAB_HOST` to your server's LAN IP.
