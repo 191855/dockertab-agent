@@ -7,7 +7,9 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	"path/filepath"
 
@@ -18,7 +20,6 @@ import (
 	"github.com/dockertab/agent/internal/middleware"
 	"github.com/dockertab/agent/internal/notifications"
 	"github.com/dockertab/agent/internal/relay"
-	"github.com/dockertab/agent/internal/tailscale"
 	"github.com/gin-gonic/gin"
 	qrterminal "github.com/mdp/qrterminal/v3"
 )
@@ -86,10 +87,8 @@ func main() {
 	api := router.Group("/api/v1")
 	api.Use(middleware.JWTAuth(authService))
 	{
-		// System
-		api.GET("/host", handler.GetHostInfo)
+			api.GET("/host", handler.GetHostInfo)
 
-		// Containers
 		api.GET("/containers", handler.ListContainers)
 		api.GET("/containers/:id", handler.GetContainer)
 		api.POST("/containers/:id/start", handler.StartContainer)
@@ -99,36 +98,17 @@ func main() {
 		api.GET("/containers/:id/logs", handler.GetContainerLogs)
 		api.GET("/containers/:id/env", handler.GetContainerEnv)
 
-		// Images
 		api.GET("/images", handler.ListImages)
 
 		// Volumes (premium)
 		api.GET("/volumes", handler.ListVolumes)
 
-		// WebSocket endpoints
 		api.GET("/containers/:id/logs/stream", handler.StreamContainerLogs)
 		api.GET("/containers/:id/stats/stream", handler.StreamContainerStats)
 		api.GET("/containers/:id/exec", handler.StreamContainerExec)
 
-		// Premium
-		api.POST("/premium/activate", handler.ActivatePremium)
-		api.GET("/premium/status", handler.GetPremiumStatus)
-
-		// Push notifications
 		api.POST("/notifications/register", handler.RegisterDeviceToken)
 		api.DELETE("/notifications/unregister", handler.UnregisterDeviceToken)
-	}
-
-	var tsMonitor *tailscale.Monitor
-	if cfg.TailscaleEnabled && cfg.PremiumEnabled {
-		tsMonitor = tailscale.NewMonitor()
-		tsMonitor.Start()
-		tsStatus := tsMonitor.GetStatus()
-		if tsStatus.Available {
-			log.Printf("  Tailscale      : %s (%s)", tsStatus.IP, tsStatus.Domain)
-		} else {
-			log.Println("  Tailscale      : enabled but not detected")
-		}
 	}
 
 	// Relay client always starts — subscription state is enforced server-side.
@@ -138,10 +118,15 @@ func main() {
 	handler.RelayConnected = relayClient.IsConnected
 	handler.RelayRegisterToken = relayClient.RegisterDeviceToken
 
-	// Push notifications: relay-based (preferred) or direct APNs (LAN fallback).
-	//
-	// The relay holds the developer's APNs key and pushes to all user devices.
-	// Direct APNs is a fallback for self-hosted setups without a relay.
+	// Debounce die+start pairs: if a "start" arrives within 1.5s of a "die"
+	// for the same container, send "restart" instead of separate notifications.
+	type pendingEntry struct {
+		name  string
+		timer *time.Timer
+	}
+	var pendingMu sync.Mutex
+	pending := make(map[string]*pendingEntry)
+
 	go func() {
 		msgs, errs := dockerClient.Events(relayCtx)
 		for {
@@ -157,16 +142,50 @@ func main() {
 				if !ok {
 					return
 				}
+				id, name := event.ContainerID, event.ContainerName
 				switch event.Action {
-				case "start", "stop", "die", "kill":
-					relayClient.SendNotification(event.ContainerID, event.ContainerName, event.Action)
+				case "die":
+					pendingMu.Lock()
+					if p, ok := pending[id]; ok {
+						p.timer.Stop()
+					}
+					entry := &pendingEntry{name: name}
+					entry.timer = time.AfterFunc(1500*time.Millisecond, func() {
+						if relayCtx.Err() != nil {
+							return
+						}
+						pendingMu.Lock()
+						if pending[id] != entry {
+							pendingMu.Unlock()
+							return
+						}
+						delete(pending, id)
+						pendingMu.Unlock()
+						log.Printf("[notifications] dispatching relay notification: action=die container=%s", name)
+						relayClient.SendNotification(id, name, "die")
+					})
+					pending[id] = entry
+					pendingMu.Unlock()
+				case "start":
+					pendingMu.Lock()
+					if p, ok := pending[id]; ok {
+						p.timer.Stop()
+						delete(pending, id)
+						pendingMu.Unlock()
+						log.Printf("[notifications] dispatching relay notification: action=restart container=%s", name)
+						relayClient.SendNotification(id, name, "restart")
+					} else {
+						pendingMu.Unlock()
+						log.Printf("[notifications] dispatching relay notification: action=start container=%s", name)
+						relayClient.SendNotification(id, name, "start")
+					}
 				}
 			}
 		}
 	}()
 
 	if apnsClient != nil {
-		// Direct APNs path — only used in self-hosted setups without a relay.
+		// Only used in self-hosted setups without a relay.
 		watcher := notifications.NewWatcher(dockerClient, tokenStore, apnsClient, cfg.AgentID, cfg.Name, cfg.APNsSandbox)
 		go func() {
 			if err := watcher.Start(relayCtx); err != nil && relayCtx.Err() == nil {
@@ -205,12 +224,6 @@ func main() {
 	if cfg.RelayURL != "" {
 		pairingPayload["relay_url"] = cfg.RelayURL
 	}
-	if tsMonitor != nil {
-		tsStatus := tsMonitor.GetStatus()
-		if tsStatus.Available {
-			pairingPayload["tailscale_host"] = fmt.Sprintf("%s:%d", tsStatus.IP, cfg.Port)
-		}
-	}
 	pairingData, _ := json.Marshal(pairingPayload)
 	log.Println("  Scan this QR code with the DockerTab iOS app:")
 	fmt.Fprintln(log.Writer())
@@ -218,7 +231,7 @@ func main() {
 	fmt.Fprintln(log.Writer())
 	log.Println("──────────────────────────────────────────────")
 
-	// Start relay after QR code is printed to avoid log lines corrupting the QR output.
+	// Started after QR code is printed to avoid relay log lines corrupting the output.
 	go relayClient.Start(relayCtx)
 
 	go func() {
@@ -234,9 +247,6 @@ func main() {
 	log.Printf("Received signal %s, shutting down gracefully...", sig)
 	relayCancel()
 	relayClient.Stop()
-	if tsMonitor != nil {
-		tsMonitor.Stop()
-	}
 	dockerClient.Close()
 	log.Println("DockerTab Agent stopped.")
 }

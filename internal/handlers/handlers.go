@@ -20,7 +20,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// pairRateLimiter enforces a per-IP limit on pairing attempts.
 type pairRateLimiter struct {
 	mu       sync.Mutex
 	attempts map[string]*pairAttempt
@@ -71,7 +70,6 @@ func (rl *pairRateLimiter) cleanup() {
 	}
 }
 
-// Handler holds shared dependencies for all route handlers.
 type Handler struct {
 	Docker    docker.DockerClient
 	Auth      *auth.Service
@@ -79,14 +77,9 @@ type Handler struct {
 	AgentID   string
 	StartedAt time.Time
 
-	// Premium features (nil when inactive)
-	RelayConnected func() bool // Returns true if relay is connected
-
-	// Push notifications (nil when APNs not configured)
-	TokenStore *notifications.TokenStore
-
-	// RelayRegisterToken forwards an APNs token to the relay when a LAN/Tailscale
-	// iOS client registers via HTTP. Set only when relay is configured.
+	RelayConnected     func() bool // nil when relay is not configured
+	TokenStore         *notifications.TokenStore
+	// Set only when relay is configured; forwards an APNs token from a LAN/Tailscale client.
 	RelayRegisterToken func(deviceID, token, environment string)
 
 	pairLimiter *pairRateLimiter
@@ -103,9 +96,6 @@ func NewHandler(dockerClient docker.DockerClient, authService *auth.Service, cfg
 	}
 }
 
-//Health & System
-
-// Healthz is a lightweight liveness probe (no auth required).
 func (h *Handler) Healthz(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
 	defer cancel()
@@ -125,7 +115,6 @@ func (h *Handler) Healthz(c *gin.Context) {
 	})
 }
 
-// GetHostInfo returns system-level Docker host information.
 func (h *Handler) GetHostInfo(c *gin.Context) {
 	info, err := h.Docker.GetHostInfo(c.Request.Context())
 	if err != nil {
@@ -135,16 +124,12 @@ func (h *Handler) GetHostInfo(c *gin.Context) {
 	c.JSON(http.StatusOK, info)
 }
 
-//Authentication / Pairing
-
 type pairRequest struct {
 	APIKey     string `json:"api_key" binding:"required"`
 	DeviceID   string `json:"device_id" binding:"required"`
 	DeviceName string `json:"device_name" binding:"required"`
 }
 
-// Pair exchanges a valid API key for a JWT token (the pairing flow).
-// The iOS app scans a QR code containing the API key, then calls this endpoint.
 func (h *Handler) Pair(c *gin.Context) {
 	if !h.pairLimiter.Allow(c.ClientIP()) {
 		c.JSON(http.StatusTooManyRequests, gin.H{"error": "too many pairing attempts, try again later"})
@@ -157,13 +142,11 @@ func (h *Handler) Pair(c *gin.Context) {
 		return
 	}
 
-	// Validate API key
 	if req.APIKey != h.Config.APIKey {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid API key"})
 		return
 	}
 
-	// Generate JWT
 	token, err := h.Auth.GenerateToken(req.DeviceID, req.DeviceName)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
@@ -178,9 +161,6 @@ func (h *Handler) Pair(c *gin.Context) {
 	})
 }
 
-//Containers
-
-// ListContainers returns all containers on the host.
 func (h *Handler) ListContainers(c *gin.Context) {
 	containers, err := h.Docker.ListContainers(c.Request.Context())
 	if err != nil {
@@ -193,7 +173,6 @@ func (h *Handler) ListContainers(c *gin.Context) {
 	})
 }
 
-// GetContainer returns details for a single container.
 func (h *Handler) GetContainer(c *gin.Context) {
 	id := c.Param("id")
 	container, err := h.Docker.GetContainer(c.Request.Context(), id)
@@ -231,7 +210,6 @@ func (h *Handler) RestartContainer(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "container restarted", "id": id})
 }
 
-// GetContainerStats returns live CPU/RAM usage for a container.
 func (h *Handler) GetContainerStats(c *gin.Context) {
 	id := c.Param("id")
 	stats, err := h.Docker.GetContainerStats(c.Request.Context(), id)
@@ -242,7 +220,6 @@ func (h *Handler) GetContainerStats(c *gin.Context) {
 	c.JSON(http.StatusOK, stats)
 }
 
-// GetContainerLogs returns the last N lines of a container's logs.
 func (h *Handler) GetContainerLogs(c *gin.Context) {
 	id := c.Param("id")
 	lines := 100
@@ -258,13 +235,10 @@ func (h *Handler) GetContainerLogs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"logs": logs, "lines": lines})
 }
 
-//WebSocket: Live Log Streaming
-
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// StreamContainerLogs upgrades to a WebSocket and streams live logs.
 func (h *Handler) StreamContainerLogs(c *gin.Context) {
 	id := c.Param("id")
 	ctx := c.Request.Context()
@@ -284,7 +258,6 @@ func (h *Handler) StreamContainerLogs(c *gin.Context) {
 	}
 	defer reader.Close()
 
-	// Listen for client disconnect
 	done := make(chan struct{})
 	go func() {
 		for {
@@ -295,7 +268,6 @@ func (h *Handler) StreamContainerLogs(c *gin.Context) {
 		}
 	}()
 
-	// Stream lines from Docker to the WebSocket
 	lines := make(chan string)
 	go func() {
 		defer close(lines)
@@ -323,9 +295,6 @@ func (h *Handler) StreamContainerLogs(c *gin.Context) {
 	}
 }
 
-//WebSocket: Live Stats Streaming
-
-// StreamContainerStats upgrades to a WebSocket and streams live resource stats.
 func (h *Handler) StreamContainerStats(c *gin.Context) {
 	id := c.Param("id")
 
@@ -339,7 +308,6 @@ func (h *Handler) StreamContainerStats(c *gin.Context) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	// Listen for client disconnect
 	done := make(chan struct{})
 	go func() {
 		for {
@@ -367,7 +335,6 @@ func (h *Handler) StreamContainerStats(c *gin.Context) {
 	}
 }
 
-// sensitiveEnvKeywords are substrings that indicate an env var holds a secret.
 var sensitiveEnvKeywords = []string{"PASSWORD", "SECRET", "TOKEN", "KEY", "PASS", "CREDENTIAL", "AUTH", "PRIVATE"}
 
 func isSensitiveEnvKey(key string) bool {
@@ -380,8 +347,7 @@ func isSensitiveEnvKey(key string) bool {
 	return false
 }
 
-// GetContainerEnv returns the environment variables for a container as a key→value map.
-// Values of sensitive keys (containing PASSWORD, SECRET, TOKEN, etc.) are redacted.
+// GetContainerEnv redacts values for keys matching sensitive keywords (PASSWORD, SECRET, TOKEN, etc.).
 func (h *Handler) GetContainerEnv(c *gin.Context) {
 	id := c.Param("id")
 	env, err := h.Docker.GetContainerEnv(c.Request.Context(), id)
@@ -405,14 +371,12 @@ func (h *Handler) GetContainerEnv(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"env": pairs, "count": len(pairs)})
 }
 
-// StreamContainerExec upgrades to a WebSocket and attaches an interactive /bin/sh
-// session inside the container. Binary frames carry raw PTY bytes; text frames are
-// JSON resize commands {"rows":N,"cols":N}.
+// StreamContainerExec attaches an interactive shell via WebSocket.
+// Binary frames carry raw PTY bytes; text frames are JSON resize commands {"rows":N,"cols":N}.
 func (h *Handler) StreamContainerExec(c *gin.Context) {
 	id := c.Param("id")
 	ctx := c.Request.Context()
 
-	// Parse initial terminal size from query params (sent by the iOS client).
 	cols, rows := 80, 24
 	if n, err := strconv.Atoi(c.DefaultQuery("cols", "80")); err == nil && n > 0 {
 		cols = n
@@ -429,10 +393,8 @@ func (h *Handler) StreamContainerExec(c *gin.Context) {
 	}
 	defer conn.Close()
 
-	// Try shells in preference order. /bin/sh is universal; bash and ash cover
-	// containers where sh is absent. NOTE: ExecCreate succeeds regardless of
-	// whether the binary exists; the fallback only helps if Docker reports an
-	// error at create time (e.g. container not running).
+	// ExecCreate can succeed even when the binary is absent; the fallback
+	// only triggers if Docker itself reports an error (e.g. container not running).
 	var execID string
 	for _, shell := range []string{"/bin/sh", "/bin/bash", "/bin/ash"} {
 		execID, err = h.Docker.ExecCreate(ctx, id, []string{shell}, rows, cols)
@@ -456,7 +418,6 @@ func (h *Handler) StreamContainerExec(c *gin.Context) {
 
 	done := make(chan struct{})
 
-	// Output: PTY → WebSocket (binary frames)
 	go func() {
 		defer close(done)
 		buf := make([]byte, 4096)
@@ -473,8 +434,6 @@ func (h *Handler) StreamContainerExec(c *gin.Context) {
 		}
 	}()
 
-	// Input: WebSocket → PTY.
-	// Binary frames are raw stdin bytes; text frames are resize commands.
 	go func() {
 		for {
 			msgType, msg, err := conn.ReadMessage()
@@ -504,7 +463,6 @@ func (h *Handler) StreamContainerExec(c *gin.Context) {
 	}
 }
 
-// ListImages returns all local Docker images.
 func (h *Handler) ListImages(c *gin.Context) {
 	images, err := h.Docker.ListImages(c.Request.Context())
 	if err != nil {
@@ -517,7 +475,6 @@ func (h *Handler) ListImages(c *gin.Context) {
 	})
 }
 
-// ListVolumes returns all local Docker volumes.
 func (h *Handler) ListVolumes(c *gin.Context) {
 	volumes, err := h.Docker.ListVolumes(c.Request.Context())
 	if err != nil {
@@ -530,53 +487,3 @@ func (h *Handler) ListVolumes(c *gin.Context) {
 	})
 }
 
-//Premium Features
-
-type premiumActivateRequest struct {
-	Receipt string `json:"receipt" binding:"required"`
-}
-
-// ActivatePremium stores the App Store receipt and enables premium features.
-func (h *Handler) ActivatePremium(c *gin.Context) {
-	var req premiumActivateRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
-		return
-	}
-
-	h.Config.PremiumEnabled = true
-	h.Config.PremiumToken = req.Receipt
-	h.Config.PremiumActivated = time.Now().UTC().Format(time.RFC3339)
-	if err := h.Config.Save(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save config"})
-		return
-	}
-
-	features := []string{}
-	if h.Config.RelayURL != "" {
-		features = append(features, "relay")
-	}
-	if h.Config.TailscaleEnabled {
-		features = append(features, "tailscale")
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"premium":  true,
-		"features": features,
-	})
-}
-
-// GetPremiumStatus returns the current premium feature state.
-func (h *Handler) GetPremiumStatus(c *gin.Context) {
-	relayConnected := false
-	if h.RelayConnected != nil {
-		relayConnected = h.RelayConnected()
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"premium_enabled": h.Config.PremiumEnabled,
-		"activated_at":    h.Config.PremiumActivated,
-		"relay_url":       h.Config.RelayURL,
-		"relay_connected": relayConnected,
-	})
-}

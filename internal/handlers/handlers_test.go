@@ -24,7 +24,6 @@ func init() {
 	gin.SetMode(gin.TestMode)
 }
 
-// mockDocker is a minimal DockerClient stub for unit tests.
 type mockDocker struct {
 	pingErr    error
 	pingDelay  time.Duration
@@ -96,10 +95,6 @@ func newTestHandler(d docker.DockerClient) *Handler {
 	return NewHandler(d, svc, cfg)
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Health check tests
-// ────────────────────────────────────────────────────────────────────────────
-
 func TestHealthz_Healthy(t *testing.T) {
 	h := newTestHandler(&mockDocker{})
 	w := httptest.NewRecorder()
@@ -132,7 +127,6 @@ func TestHealthz_DockerUnreachable(t *testing.T) {
 }
 
 func TestHealthz_Timeout(t *testing.T) {
-	// Ping takes 5s; handler enforces 2s timeout — context should cancel.
 	h := newTestHandler(&mockDocker{pingDelay: 5 * time.Second})
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -142,7 +136,6 @@ func TestHealthz_Timeout(t *testing.T) {
 	h.Healthz(c)
 	elapsed := time.Since(start)
 
-	// Should finish in well under 3s (handler's 2s limit)
 	if elapsed > 3*time.Second {
 		t.Errorf("health check did not respect 2s timeout (took %v)", elapsed)
 	}
@@ -150,10 +143,6 @@ func TestHealthz_Timeout(t *testing.T) {
 		t.Errorf("expected 503 on timeout, got %d", w.Code)
 	}
 }
-
-// ────────────────────────────────────────────────────────────────────────────
-// Rate limiter tests
-// ────────────────────────────────────────────────────────────────────────────
 
 func TestPairRateLimiter_AllowsUnderLimit(t *testing.T) {
 	rl := newPairRateLimiter()
@@ -179,7 +168,6 @@ func TestPairRateLimiter_IndependentPerIP(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		rl.Allow("1.2.3.4")
 	}
-	// Different IP is unaffected
 	if !rl.Allow("9.9.9.9") {
 		t.Fatal("different IP should still be allowed")
 	}
@@ -213,7 +201,6 @@ func TestPair_RateLimitReturns429(t *testing.T) {
 		"device_name": "iPhone",
 	})
 
-	// Exhaust the limit (5 successful, 6th is blocked)
 	for i := 0; i < 5; i++ {
 		req := httptest.NewRequest("POST", "/pair", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -232,10 +219,6 @@ func TestPair_RateLimitReturns429(t *testing.T) {
 		t.Errorf("expected 429, got %d body=%s", w.Code, w.Body.String())
 	}
 }
-
-// ────────────────────────────────────────────────────────────────────────────
-// Env var redaction tests
-// ────────────────────────────────────────────────────────────────────────────
 
 func TestIsSensitiveEnvKey(t *testing.T) {
 	cases := []struct {
@@ -298,7 +281,6 @@ func TestGetContainerEnv_RedactsSensitiveValues(t *testing.T) {
 	}
 	json.Unmarshal(w.Body.Bytes(), &body)
 
-	// Plain vars are passed through unchanged
 	if body.Env["PORT"] != "8080" {
 		t.Errorf("PORT should be '8080', got %q", body.Env["PORT"])
 	}
@@ -309,7 +291,6 @@ func TestGetContainerEnv_RedactsSensitiveValues(t *testing.T) {
 		t.Errorf("HOST should be 'localhost', got %q", body.Env["HOST"])
 	}
 
-	// Sensitive vars are redacted
 	for _, k := range []string{"DATABASE_PASSWORD", "API_KEY", "JWT_SECRET"} {
 		if body.Env[k] != "[REDACTED]" {
 			t.Errorf("%s should be [REDACTED], got %q", k, body.Env[k])
@@ -345,12 +326,6 @@ func TestGetContainerEnv_DockerError(t *testing.T) {
 	}
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Shell fallback tests (require a real HTTP server for the WebSocket upgrade)
-// ────────────────────────────────────────────────────────────────────────────
-
-// execTestServer spins up an httptest.Server wired to StreamContainerExec
-// and returns the server URL and the mock docker used.
 func execTestServer(t *testing.T, d docker.DockerClient) (*httptest.Server, string) {
 	t.Helper()
 	h := newTestHandler(d)
@@ -365,29 +340,21 @@ func TestStreamContainerExec_TriesShFirst(t *testing.T) {
 	md := &mockDocker{}
 	_, wsURL := execTestServer(t, md)
 
-	// Dial as a WebSocket — upgrade succeeds, ExecCreate is reached.
-	// ExecAttach will return the stub error and close; we only care which shell
-	// was tried first via ExecCreate.
 	conn, _, _ := websocket.DefaultDialer.Dial(wsURL+"?rows=24&cols=80", nil)
 	if conn != nil {
 		conn.Close()
 	}
-	// Give the handler goroutine a moment to record the call.
 	time.Sleep(50 * time.Millisecond)
 
 	if len(md.execShells) == 0 {
 		t.Fatal("expected ExecCreate to be called at least once")
 	}
-	// /bin/sh must be first — it is the universal POSIX shell present on all
-	// images that have a shell (Alpine, Debian, Ubuntu, BusyBox, etc.).
 	if md.execShells[0] != "/bin/sh" {
 		t.Errorf("expected first shell tried to be /bin/sh, got %q", md.execShells[0])
 	}
 }
 
 func TestStreamContainerExec_FallsBackToBash(t *testing.T) {
-	// /bin/sh fails at ExecCreate (e.g. container reports it missing).
-	// Handler should fall back to /bin/bash.
 	fm := &failFirstMock{inner: &mockDocker{}, failCount: 1}
 	_, wsURL := execTestServer(t, fm)
 
@@ -397,7 +364,6 @@ func TestStreamContainerExec_FallsBackToBash(t *testing.T) {
 	}
 	time.Sleep(50 * time.Millisecond)
 
-	// The second call (fallback) should have succeeded with /bin/bash.
 	if len(fm.inner.execShells) == 0 {
 		t.Fatal("expected at least one successful ExecCreate (fallback)")
 	}
@@ -407,13 +373,11 @@ func TestStreamContainerExec_FallsBackToBash(t *testing.T) {
 }
 
 func TestStreamContainerExec_AllShellsFail(t *testing.T) {
-	// All shells fail — handler should close cleanly without panic.
 	fm := &failFirstMock{inner: &mockDocker{}, failCount: 99}
 	_, wsURL := execTestServer(t, fm)
 
 	conn, _, _ := websocket.DefaultDialer.Dial(wsURL+"?rows=24&cols=80", nil)
 	if conn != nil {
-		// Read the error message the handler writes back
 		conn.SetReadDeadline(time.Now().Add(time.Second))
 		_, msg, err := conn.ReadMessage()
 		conn.Close()
@@ -423,7 +387,6 @@ func TestStreamContainerExec_AllShellsFail(t *testing.T) {
 	}
 }
 
-// failFirstMock wraps a mockDocker and returns an error on the first ExecCreate call.
 type failFirstMock struct {
 	inner     *mockDocker
 	failCount int

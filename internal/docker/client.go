@@ -19,20 +19,18 @@ import (
 	"github.com/docker/docker/pkg/stdcopy"
 )
 
-// ContainerEvent is a simplified Docker container event.
 type ContainerEvent struct {
 	ContainerID   string
 	ContainerName string
 	Action        string // "start" | "stop" | "die" | "kill"
 }
 
-// DockerClient defines the ONLY operations the agent is allowed to perform.
-// This acts as a security boundary — no exec, no image pull, no volume/network management.
+// DockerClient is the security boundary for all Docker operations — only the
+// operations listed here are accessible to the rest of the agent.
 type DockerClient interface {
 	Ping(ctx context.Context) error
 	Close() error
 
-	// Read operations
 	ListContainers(ctx context.Context) ([]ContainerSummary, error)
 	GetContainer(ctx context.Context, id string) (*ContainerSummary, error)
 	GetContainerStats(ctx context.Context, id string) (*ContainerStats, error)
@@ -42,24 +40,19 @@ type DockerClient interface {
 	ListImages(ctx context.Context) ([]ImageSummary, error)
 	ListVolumes(ctx context.Context) ([]VolumeSummary, error)
 
-	// Write operations (container lifecycle only)
 	StartContainer(ctx context.Context, id string) error
 	StopContainer(ctx context.Context, id string) error
 	RestartContainer(ctx context.Context, id string) error
 
-	// Inspection
 	GetContainerEnv(ctx context.Context, id string) ([]string, error)
 
-	// Exec (interactive shell)
 	ExecCreate(ctx context.Context, containerID string, cmd []string, rows, cols int) (string, error)
 	ExecAttach(ctx context.Context, execID string) (types.HijackedResponse, error)
 	ExecResize(ctx context.Context, execID string, rows, cols int) error
 
-	// Event streaming (used by the notification watcher)
 	Events(ctx context.Context) (<-chan ContainerEvent, <-chan error)
 }
 
-// ImageSummary is the simplified image model sent to the iOS app.
 type ImageSummary struct {
 	ID      string   `json:"id"`
 	Tags    []string `json:"tags"`
@@ -67,7 +60,6 @@ type ImageSummary struct {
 	Created int64    `json:"created"` // Unix seconds
 }
 
-// VolumeSummary is the simplified volume model sent to the iOS app.
 type VolumeSummary struct {
 	Name       string            `json:"name"`
 	Driver     string            `json:"driver"`
@@ -77,15 +69,12 @@ type VolumeSummary struct {
 	Labels     map[string]string `json:"labels,omitempty"`
 }
 
-// Compile-time check: *Client implements DockerClient.
 var _ DockerClient = (*Client)(nil)
 
-// Client wraps the Docker SDK client with DockerTab-specific methods.
 type Client struct {
 	cli *client.Client
 }
 
-// ContainerSummary is the simplified container model sent to the iOS app.
 type ContainerSummary struct {
 	ID      string            `json:"id"`
 	Name    string            `json:"name"`
@@ -98,7 +87,6 @@ type ContainerSummary struct {
 	Stats   *ContainerStats   `json:"stats,omitempty"`
 }
 
-// ContainerStats holds live resource usage metrics.
 type ContainerStats struct {
 	CPUUsage        float64 `json:"cpu_usage"`
 	MemoryUsage     float64 `json:"memory_usage"`
@@ -111,14 +99,12 @@ type ContainerStats struct {
 	CPUThrottlePct  float64 `json:"cpu_throttle_pct"` // % of time CPU was throttled
 }
 
-// PortBinding represents a container port mapping.
 type PortBinding struct {
 	HostPort      string `json:"host_port"`
 	ContainerPort string `json:"container_port"`
 	Protocol      string `json:"protocol"`
 }
 
-// HostInfo holds system-level information.
 type HostInfo struct {
 	Hostname      string  `json:"hostname"`
 	OS            string  `json:"os"`
@@ -143,7 +129,6 @@ func NewClient(socketPath string) (*Client, error) {
 		return nil, fmt.Errorf("failed to create Docker client: %w", err)
 	}
 
-	// Verify connection
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -158,7 +143,6 @@ func (c *Client) Close() error {
 	return c.cli.Close()
 }
 
-// ListContainers returns all containers with their current state.
 func (c *Client) ListContainers(ctx context.Context) ([]ContainerSummary, error) {
 	containers, err := c.cli.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
@@ -171,7 +155,7 @@ func (c *Client) ListContainers(ctx context.Context) ([]ContainerSummary, error)
 		if len(ctr.Names) > 0 {
 			name = ctr.Names[0]
 			if len(name) > 0 && name[0] == '/' {
-				name = name[1:] // Strip leading slash
+				name = name[1:]
 			}
 		}
 
@@ -199,7 +183,6 @@ func (c *Client) ListContainers(ctx context.Context) ([]ContainerSummary, error)
 	return summaries, nil
 }
 
-// GetContainer returns details for a single container.
 func (c *Client) GetContainer(ctx context.Context, id string) (*ContainerSummary, error) {
 	inspect, err := c.cli.ContainerInspect(ctx, id)
 	if err != nil {
@@ -236,24 +219,20 @@ func (c *Client) GetContainer(ctx context.Context, id string) (*ContainerSummary
 	}, nil
 }
 
-// StartContainer starts a stopped container.
 func (c *Client) StartContainer(ctx context.Context, id string) error {
 	return c.cli.ContainerStart(ctx, id, container.StartOptions{})
 }
 
-// StopContainer stops a running container with a 10-second timeout.
 func (c *Client) StopContainer(ctx context.Context, id string) error {
 	timeout := 10
 	return c.cli.ContainerStop(ctx, id, container.StopOptions{Timeout: &timeout})
 }
 
-// RestartContainer restarts a container with a 10-second timeout.
 func (c *Client) RestartContainer(ctx context.Context, id string) error {
 	timeout := 10
 	return c.cli.ContainerRestart(ctx, id, container.StopOptions{Timeout: &timeout})
 }
 
-// GetContainerStats returns a one-shot resource usage snapshot.
 func (c *Client) GetContainerStats(ctx context.Context, id string) (*ContainerStats, error) {
 	statsResp, err := c.cli.ContainerStats(ctx, id, false)
 	if err != nil {
@@ -269,7 +248,6 @@ func (c *Client) GetContainerStats(ctx context.Context, id string) (*ContainerSt
 	return parseStats(&statsJSON), nil
 }
 
-// GetContainerLogs returns the last N lines of a container's logs.
 func (c *Client) GetContainerLogs(ctx context.Context, id string, lines int) (string, error) {
 	opts := container.LogsOptions{
 		ShowStdout: true,
@@ -292,9 +270,7 @@ func (c *Client) GetContainerLogs(ctx context.Context, id string, lines int) (st
 	return buf.String(), nil
 }
 
-// StreamLogs returns a reader for live-tailing container logs.
-// The returned reader has Docker's 8-byte multiplexed headers stripped,
-// so it yields clean UTF-8 log text.
+// StreamLogs strips Docker's 8-byte multiplexed framing headers from the returned reader.
 func (c *Client) StreamLogs(ctx context.Context, id string, lines int) (io.ReadCloser, error) {
 	opts := container.LogsOptions{
 		ShowStdout: true,
@@ -312,8 +288,6 @@ func (c *Client) StreamLogs(ctx context.Context, id string, lines int) (io.ReadC
 	pr, pw := io.Pipe()
 	go func() {
 		defer raw.Close()
-		// StdCopy demultiplexes the Docker stream, stripping the 8-byte headers.
-		// Both stdout and stderr are merged into pw.
 		_, err := stdcopy.StdCopy(pw, pw, raw)
 		pw.CloseWithError(err)
 	}()
@@ -321,7 +295,6 @@ func (c *Client) StreamLogs(ctx context.Context, id string, lines int) (io.ReadC
 	return pr, nil
 }
 
-// GetHostInfo returns system-level information about the Docker host.
 func (c *Client) GetHostInfo(ctx context.Context) (*HostInfo, error) {
 	info, err := c.cli.Info(ctx)
 	if err != nil {
@@ -340,7 +313,7 @@ func (c *Client) GetHostInfo(ctx context.Context) (*HostInfo, error) {
 		OS:            info.OperatingSystem,
 		Architecture:  info.Architecture,
 		CPUs:          info.NCPU,
-		MemoryTotal:   float64(info.MemTotal) / 1024 / 1024, // Convert to MB
+		MemoryTotal:   float64(info.MemTotal) / 1024 / 1024, // MB
 		DockerVersion: version.Version,
 		Containers:    info.Containers,
 		Running:       info.ContainersRunning,
@@ -356,7 +329,6 @@ func (c *Client) Ping(ctx context.Context) error {
 	return err
 }
 
-// ListImages returns a summary of all local Docker images.
 func (c *Client) ListImages(ctx context.Context) ([]ImageSummary, error) {
 	images, err := c.cli.ImageList(ctx, image.ListOptions{All: false})
 	if err != nil {
@@ -370,7 +342,7 @@ func (c *Client) ListImages(ctx context.Context) ([]ImageSummary, error) {
 			tags = []string{"<none>:<none>"}
 		}
 		summaries = append(summaries, ImageSummary{
-			ID:      img.ID[7:19], // strip "sha256:" prefix, take 12 chars
+			ID:      img.ID[7:19], // strip "sha256:", take 12 chars
 			Tags:    tags,
 			SizeMB:  float64(img.Size) / 1024 / 1024,
 			Created: img.Created,
@@ -379,7 +351,6 @@ func (c *Client) ListImages(ctx context.Context) ([]ImageSummary, error) {
 	return summaries, nil
 }
 
-// ListVolumes returns a summary of all local Docker volumes.
 func (c *Client) ListVolumes(ctx context.Context) ([]VolumeSummary, error) {
 	resp, err := c.cli.VolumeList(ctx, volume.ListOptions{})
 	if err != nil {
@@ -400,7 +371,6 @@ func (c *Client) ListVolumes(ctx context.Context) ([]VolumeSummary, error) {
 	return summaries, nil
 }
 
-// ExecCreate creates a TTY exec instance in the container and returns its ID.
 func (c *Client) ExecCreate(ctx context.Context, containerID string, cmd []string, rows, cols int) (string, error) {
 	resp, err := c.cli.ContainerExecCreate(ctx, containerID, container.ExecOptions{
 		AttachStdin:  true,
@@ -416,7 +386,6 @@ func (c *Client) ExecCreate(ctx context.Context, containerID string, cmd []strin
 	return resp.ID, nil
 }
 
-// ExecResize resizes the TTY of a running exec instance.
 func (c *Client) ExecResize(ctx context.Context, execID string, rows, cols int) error {
 	return c.cli.ContainerExecResize(ctx, execID, container.ResizeOptions{
 		Height: uint(rows),
@@ -424,12 +393,10 @@ func (c *Client) ExecResize(ctx context.Context, execID string, rows, cols int) 
 	})
 }
 
-// ExecAttach attaches to a previously created exec instance (TTY mode).
 func (c *Client) ExecAttach(ctx context.Context, execID string) (types.HijackedResponse, error) {
 	return c.cli.ContainerExecAttach(ctx, execID, container.ExecAttachOptions{Tty: true})
 }
 
-// GetContainerEnv returns the environment variables for a container.
 func (c *Client) GetContainerEnv(ctx context.Context, id string) ([]string, error) {
 	inspect, err := c.cli.ContainerInspect(ctx, id)
 	if err != nil {
@@ -438,8 +405,6 @@ func (c *Client) GetContainerEnv(ctx context.Context, id string) ([]string, erro
 	return inspect.Config.Env, nil
 }
 
-// Events streams container lifecycle events (start, stop, die, kill).
-// The caller should select on both returned channels and stop when ctx is done.
 func (c *Client) Events(ctx context.Context) (<-chan ContainerEvent, <-chan error) {
 	outEvents := make(chan ContainerEvent, 16)
 	outErrs := make(chan error, 1)
@@ -485,7 +450,6 @@ func (c *Client) Events(ctx context.Context) (<-chan ContainerEvent, <-chan erro
 }
 
 func parseStats(stats *types.StatsJSON) *ContainerStats {
-	// CPU percentage calculation
 	cpuDelta := float64(stats.CPUStats.CPUUsage.TotalUsage - stats.PreCPUStats.CPUUsage.TotalUsage)
 	systemDelta := float64(stats.CPUStats.SystemUsage - stats.PreCPUStats.SystemUsage)
 	cpuCount := float64(stats.CPUStats.OnlineCPUs)
@@ -498,18 +462,15 @@ func parseStats(stats *types.StatsJSON) *ContainerStats {
 		cpuPercent = (cpuDelta / systemDelta) * cpuCount * 100.0
 	}
 
-	// Memory usage
 	memUsage := float64(stats.MemoryStats.Usage-stats.MemoryStats.Stats["cache"]) / 1024 / 1024
 	memLimit := float64(stats.MemoryStats.Limit) / 1024 / 1024
 
-	// Network I/O
 	var netIn, netOut float64
 	for _, v := range stats.Networks {
 		netIn += float64(v.RxBytes)
 		netOut += float64(v.TxBytes)
 	}
 
-	// Block I/O
 	var blockRead, blockWrite float64
 	for _, bio := range stats.BlkioStats.IoServiceBytesRecursive {
 		switch strings.ToLower(bio.Op) {
@@ -520,7 +481,6 @@ func parseStats(stats *types.StatsJSON) *ContainerStats {
 		}
 	}
 
-	// CPU throttling
 	cpuThrottlePct := 0.0
 	throttleData := stats.CPUStats.ThrottlingData
 	if throttleData.ThrottledPeriods > 0 && throttleData.Periods > 0 {

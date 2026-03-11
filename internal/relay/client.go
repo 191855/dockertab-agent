@@ -27,13 +27,11 @@ import (
 // validContainerID matches Docker container IDs (hex) and container names.
 var validContainerID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.\-]{0,127}$`)
 
-// streamEntry pairs a stream's cancel function with the iOS client that opened it.
 type streamEntry struct {
 	clientID string
 	cancel   context.CancelFunc
 }
 
-// Client manages a persistent outbound WebSocket connection to the relay server.
 type Client struct {
 	cfg         *config.Config
 	authService *auth.Service
@@ -79,8 +77,6 @@ func NewClient(cfg *config.Config, authService *auth.Service, dockerClient docke
 	}
 }
 
-// Start connects to the relay server and begins processing messages.
-// It reconnects automatically on disconnect.
 func (c *Client) Start(ctx context.Context) {
 	for {
 		select {
@@ -95,14 +91,12 @@ func (c *Client) Start(ctx context.Context) {
 			log.Printf("[relay] connection failed: %v", err)
 		}
 
-		// Reconnect with exponential backoff
 		if !c.backoff(ctx) {
 			return
 		}
 	}
 }
 
-// Stop shuts down the relay client gracefully.
 func (c *Client) Stop() {
 	c.once.Do(func() {
 		close(c.done)
@@ -115,17 +109,13 @@ func (c *Client) Stop() {
 	})
 }
 
-// IsConnected returns true if the relay connection is active.
 func (c *Client) IsConnected() bool {
 	c.connMu.Lock()
 	defer c.connMu.Unlock()
 	return c.conn != nil
 }
 
-// RegisterDeviceToken forwards an APNs device token to the relay on behalf of a
-// LAN or Tailscale iOS client. These clients authenticate directly with the agent
-// (no relay WebSocket), so the agent forwards their token so the relay can push
-// notifications to them.
+// RegisterDeviceToken forwards a token to the relay for LAN/Tailscale clients that bypass the relay WebSocket.
 func (c *Client) RegisterDeviceToken(deviceID, token, environment string) {
 	c.sendEnvelope(Envelope{
 		Type: TypeRegisterAPNs,
@@ -137,8 +127,6 @@ func (c *Client) RegisterDeviceToken(deviceID, token, environment string) {
 	})
 }
 
-// SendNotification forwards a container event to the relay for APNs dispatch.
-// The relay holds the developer's APNs key and pushes to all registered devices.
 func (c *Client) SendNotification(containerID, containerName, action string) {
 	c.sendEnvelope(Envelope{
 		Type: TypeNotification,
@@ -154,8 +142,7 @@ func (c *Client) SendNotification(containerID, containerName, action string) {
 func (c *Client) backoff(ctx context.Context) bool {
 	c.backoffAttempt++
 	delay := time.Duration(math.Min(float64(time.Second)*math.Pow(2, float64(c.backoffAttempt)), float64(60*time.Second)))
-	// Add jitter: +/- 20%
-	jitter := time.Duration(float64(delay) * (0.8 + 0.4*rand.Float64()))
+	jitter := time.Duration(float64(delay) * (0.8 + 0.4*rand.Float64())) // +/- 20%
 
 	log.Printf("[relay] reconnecting in %s...", jitter.Round(time.Millisecond))
 
@@ -189,7 +176,6 @@ func (c *Client) connect(ctx context.Context) error {
 		c.cancelAllStreams()
 	}()
 
-	// Authenticate with relay
 	if err := c.authenticate(conn); err != nil {
 		return fmt.Errorf("auth failed: %w", err)
 	}
@@ -197,7 +183,6 @@ func (c *Client) connect(ctx context.Context) error {
 	log.Println("[relay] connected and authenticated")
 	c.backoffAttempt = 0
 
-	// Run read/write loops
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -220,7 +205,6 @@ func (c *Client) authenticate(conn *websocket.Conn) error {
 		return fmt.Errorf("failed to send auth: %w", err)
 	}
 
-	// Wait for auth_ok
 	var resp Envelope
 	if err := conn.ReadJSON(&resp); err != nil {
 		return fmt.Errorf("failed to read auth response: %w", err)
@@ -285,6 +269,12 @@ func (c *Client) writeLoop(ctx context.Context, conn *websocket.Conn) {
 		case msg := <-c.send:
 			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
 				log.Printf("[relay] write failed: %v", err)
+				// Re-enqueue for the next connection attempt.
+				select {
+				case c.send <- msg:
+				default:
+					log.Println("[relay] send buffer full, dropping message on re-enqueue")
+				}
 				return
 			}
 		}
@@ -305,7 +295,6 @@ func (c *Client) sendEnvelope(env Envelope) {
 	}
 }
 
-// handleClientAuth validates an iOS client's JWT locally.
 func (c *Client) handleClientAuth(env Envelope) {
 	var payload ClientAuthPayload
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
@@ -331,7 +320,6 @@ func (c *Client) handleClientAuth(env Envelope) {
 	})
 }
 
-// handleClientReAuth handles API key re-pairing for expired JWTs.
 func (c *Client) handleClientReAuth(env Envelope) {
 	var payload ClientReAuthPayload
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
@@ -343,7 +331,6 @@ func (c *Client) handleClientReAuth(env Envelope) {
 		return
 	}
 
-	// Validate API key
 	if payload.APIKey != c.cfg.APIKey {
 		c.sendEnvelope(Envelope{
 			Type:     TypeClientReAuthResult,
@@ -353,7 +340,6 @@ func (c *Client) handleClientReAuth(env Envelope) {
 		return
 	}
 
-	// Generate fresh JWT
 	token, err := c.authService.GenerateToken(payload.DeviceID, payload.DeviceName)
 	if err != nil {
 		c.sendEnvelope(Envelope{
@@ -371,7 +357,6 @@ func (c *Client) handleClientReAuth(env Envelope) {
 	})
 }
 
-// handleRequest dispatches an HTTP request through the Gin router.
 func (c *Client) handleRequest(ctx context.Context, env Envelope) {
 	var payload RequestPayload
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
@@ -387,7 +372,6 @@ func (c *Client) handleRequest(ctx context.Context, env Envelope) {
 		return
 	}
 
-	// Build synthetic HTTP request
 	httpReq, err := http.NewRequestWithContext(ctx, payload.Method, payload.Path, strings.NewReader(payload.Body))
 	if err != nil {
 		c.sendEnvelope(Envelope{
@@ -406,17 +390,15 @@ func (c *Client) handleRequest(ctx context.Context, env Envelope) {
 		httpReq.Header.Set(k, v)
 	}
 
-	// Inject internal relay JWT so the request passes JWT middleware.
-	// The client already authenticated during the relay auth handshake.
+	// The client already authenticated at the relay; inject the internal JWT
+	// so the request passes the agent's JWT middleware.
 	if c.relayJWT != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+c.relayJWT)
 	}
 
-	// Dispatch through router (runs all middleware including JWT auth)
 	recorder := httptest.NewRecorder()
 	c.router.ServeHTTP(recorder, httpReq)
 
-	// Build response
 	respHeaders := make(map[string]string)
 	for k, v := range recorder.Header() {
 		if len(v) > 0 {
@@ -436,7 +418,6 @@ func (c *Client) handleRequest(ctx context.Context, env Envelope) {
 	})
 }
 
-// handleStreamOpen starts a log or stats stream through the relay.
 func (c *Client) handleStreamOpen(ctx context.Context, env Envelope) {
 	var payload RequestPayload
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
@@ -460,12 +441,12 @@ func (c *Client) handleStreamOpen(ctx context.Context, env Envelope) {
 		})
 	}()
 
-	// Extract container ID from path: /api/v1/containers/:id/logs/stream or /stats/stream
+	// e.g. /api/v1/containers/{id}/logs/stream, /stats/stream, /exec
 	parts := strings.Split(strings.TrimPrefix(payload.Path, "/"), "/")
 	if len(parts) < 4 {
 		return
 	}
-	containerID := parts[3] // api/v1/containers/{id}/...
+	containerID := parts[3]
 	if !validContainerID.MatchString(containerID) {
 		log.Printf("[relay] rejected invalid container ID: %q", containerID)
 		return
@@ -476,7 +457,6 @@ func (c *Client) handleStreamOpen(ctx context.Context, env Envelope) {
 	} else if strings.Contains(payload.Path, "/stats/stream") {
 		c.streamStats(streamCtx, env, containerID)
 	} else if strings.Contains(payload.Path, "/exec") {
-		// Parse initial terminal size from query string in path.
 		rows, cols := 24, 80
 		if idx := strings.Index(payload.Path, "?"); idx >= 0 {
 			for _, kv := range strings.Split(payload.Path[idx+1:], "&") {
@@ -549,9 +529,8 @@ func (c *Client) streamStats(ctx context.Context, env Envelope, containerID stri
 	}
 }
 
-// streamExec runs an interactive shell inside the container, piping PTY output
-// to the relay as base64-encoded stream_data frames.
-// /bin/sh is tried first (universally available); bash and ash are fallbacks.
+// streamExec runs an interactive shell; /bin/sh is tried first, bash and ash are fallbacks.
+// PTY output is sent as base64-encoded stream_data frames.
 func (c *Client) streamExec(ctx context.Context, env Envelope, containerID string, rows, cols int) {
 	var execID string
 	var err error
@@ -573,7 +552,6 @@ func (c *Client) streamExec(ctx context.Context, env Envelope, containerID strin
 	}
 	defer resp.Close()
 
-	// Register stdin writer and execID so input/resize handlers can find them.
 	c.stdinMu.Lock()
 	c.stdinWriters[env.RequestID] = resp.Conn
 	c.stdinMu.Unlock()
@@ -612,8 +590,6 @@ func (c *Client) streamExec(ctx context.Context, env Envelope, containerID strin
 	}
 }
 
-// handleStreamInput decodes a base64 stdin frame from the iOS client and writes
-// it to the active exec session's PTY.
 func (c *Client) handleStreamInput(env Envelope) {
 	var payload StreamPayload
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
@@ -632,7 +608,6 @@ func (c *Client) handleStreamInput(env Envelope) {
 	_, _ = w.Write(decoded)
 }
 
-// handleStreamResize resizes the PTY of an active exec session.
 func (c *Client) handleStreamResize(env Envelope) {
 	var payload ResizePayload
 	if err := json.Unmarshal(env.Payload, &payload); err != nil || payload.Rows <= 0 || payload.Cols <= 0 {
@@ -651,13 +626,11 @@ func (c *Client) handleStreamClose(env Envelope) {
 	c.streamsMu.Lock()
 	defer c.streamsMu.Unlock()
 	if env.RequestID != "" {
-		// Targeted close: cancel the specific stream.
 		if entry, ok := c.streams[env.RequestID]; ok {
 			entry.cancel()
 			delete(c.streams, env.RequestID)
 		}
 	} else if env.ClientID != "" {
-		// Client disconnected: cancel all streams belonging to that client.
 		for id, entry := range c.streams {
 			if entry.clientID == env.ClientID {
 				entry.cancel()

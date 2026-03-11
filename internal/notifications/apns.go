@@ -19,8 +19,6 @@ import (
 
 const apnsBundleID = "com.dockertab.app"
 
-// APNsClient sends push notifications to Apple devices via APNs HTTP/2 API.
-// Configure via environment: DOCKERTAB_APNS_KEY_FILE, DOCKERTAB_APNS_KEY_ID, DOCKERTAB_APNS_TEAM_ID.
 type APNsClient struct {
 	keyID  string
 	teamID string
@@ -34,7 +32,6 @@ type APNsClient struct {
 	httpClient *http.Client
 }
 
-// NewAPNsClient loads the .p8 private key and prepares an APNs sender.
 func NewAPNsClient(keyFile, keyID, teamID string) (*APNsClient, error) {
 	data, err := os.ReadFile(keyFile)
 	if err != nil {
@@ -64,7 +61,7 @@ func NewAPNsClient(keyFile, keyID, teamID string) (*APNsClient, error) {
 	}, nil
 }
 
-// bearerToken returns a cached ES256 JWT, refreshing every 55 minutes.
+// bearerToken returns a cached ES256 JWT, refreshing every 55 minutes (APNs tokens expire after 60).
 func (c *APNsClient) bearerToken() (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -106,7 +103,6 @@ type apnsAlert struct {
 	Body  string `json:"body"`
 }
 
-// Push delivers a notification to a single device token.
 func (c *APNsClient) Push(ctx context.Context, deviceToken, title, body, containerID, containerName, agentID string, sandbox bool) error {
 	bearer, err := c.bearerToken()
 	if err != nil {

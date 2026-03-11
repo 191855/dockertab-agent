@@ -7,14 +7,13 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// Service handles JWT token creation and validation.
 type Service struct {
 	secret     []byte
 	issuer     string
 	expiration time.Duration
 }
 
-// Claims extends the standard JWT claims with DockerTab-specific fields.
+// Claims extends jwt.RegisteredClaims with DockerTab device fields.
 type Claims struct {
 	DeviceID   string `json:"device_id"`
 	DeviceName string `json:"device_name"`
@@ -25,11 +24,10 @@ func NewService(secret string) *Service {
 	return &Service{
 		secret:     []byte(secret),
 		issuer:     "dockertab-agent",
-		expiration: 30 * 24 * time.Hour, // 30-day tokens
+		expiration: 180 * 24 * time.Hour,
 	}
 }
 
-// GenerateToken creates a signed JWT for an authenticated device.
 func (s *Service) GenerateToken(deviceID, deviceName string) (string, error) {
 	now := time.Now()
 	claims := Claims{
@@ -47,7 +45,6 @@ func (s *Service) GenerateToken(deviceID, deviceName string) (string, error) {
 	return token.SignedString(s.secret)
 }
 
-// ValidateToken parses and validates a JWT, returning the claims if valid.
 func (s *Service) ValidateToken(tokenString string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {

@@ -7,7 +7,6 @@ import (
 
 func TestNewService_Expiration(t *testing.T) {
 	svc := NewService("test-secret")
-	// 30-day expiration
 	expected := 30 * 24 * time.Hour
 	if svc.expiration != expected {
 		t.Fatalf("expected expiration %v, got %v", expected, svc.expiration)
@@ -65,7 +64,6 @@ func TestValidateToken_Tampered(t *testing.T) {
 	svc := NewService("test-secret")
 	token, _ := svc.GenerateToken("device-1", "iPhone")
 
-	// Tamper with the last character
 	tampered := token[:len(token)-1] + "X"
 	if _, err := svc.ValidateToken(tampered); err == nil {
 		t.Fatal("expected error for tampered token")
@@ -79,15 +77,13 @@ func TestValidateToken_Empty(t *testing.T) {
 	}
 }
 
-func TestValidateToken_WrongIssuer(t *testing.T) {
+func TestValidateToken_IssuerClaim(t *testing.T) {
 	svc := NewService("test-secret")
-	// Create a token then validate with a different issuer service
 	token, _ := svc.GenerateToken("device-1", "iPhone")
 
-	// Same secret but validate should still pass (issuer is checked internally)
 	claims, err := svc.ValidateToken(token)
 	if err != nil {
-		t.Fatalf("same-issuer validation failed: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if claims.Issuer != "dockertab-agent" {
 		t.Errorf("expected issuer=dockertab-agent, got %q", claims.Issuer)
@@ -106,7 +102,6 @@ func TestToken_ExpiresAtIs30Days(t *testing.T) {
 	}
 
 	expiresAt := claims.ExpiresAt.Time
-	// Should expire ~30 days from now
 	lower := before.Add(30 * 24 * time.Hour).Add(-time.Second)
 	upper := after.Add(30 * 24 * time.Hour).Add(time.Second)
 	if expiresAt.Before(lower) || expiresAt.After(upper) {

@@ -8,7 +8,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// JWTAuth returns a Gin middleware that validates JWT Bearer tokens.
 func JWTAuth(authService *auth.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		header := c.GetHeader("Authorization")
@@ -35,17 +34,14 @@ func JWTAuth(authService *auth.Service) gin.HandlerFunc {
 			return
 		}
 
-		// Store claims in context for handlers to access
 		c.Set("device_id", claims.DeviceID)
 		c.Set("device_name", claims.DeviceName)
 		c.Next()
 	}
 }
 
-// CORS returns a middleware that adds Cross-Origin Resource Sharing headers.
-// The wildcard origin is intentional: the agent is designed for local-network
-// use and is not exposed to the public internet. All sensitive endpoints are
-// protected by JWT authentication regardless of origin.
+// CORS adds permissive CORS headers. The wildcard origin is intentional — the agent
+// runs on a local network and all sensitive endpoints require JWT auth regardless.
 func CORS() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")
