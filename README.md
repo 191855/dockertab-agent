@@ -135,11 +135,16 @@ If you'd rather skip the volume, just set `DOCKERTAB_API_KEY` and `DOCKERTAB_JWT
 
 ---
 
-## Push Notifications
+## Push Notifications & Remote Access
 
-Container start, stop, and restart events are delivered to your iPhone via the DockerTab relay server. The agent connects to the relay over WebSocket and forwards Docker events — no inbound ports or firewall rules needed on your server.
+Push notifications and remote access (outside your home network) are **DockerTab Premium** features, powered by the DockerTab relay — operated by DockerTab.
 
-The relay acts as a stateless passthrough. Event payloads are forwarded to APNs and immediately discarded — nothing is stored, logged, or used beyond delivering the notification.
+The agent maintains a persistent WebSocket connection to the relay. This serves two purposes:
+
+- **Push notifications** — container start, stop, and restart events are forwarded to APNs and delivered to your iPhone, even when you're away from home.
+- **Remote access** — when your phone is outside your LAN, the relay proxies API requests to your agent so you can manage containers from anywhere without exposing your server to the internet.
+
+**Privacy:** The relay is stateless. It forwards requests and notification payloads without storing or retaining any data. Only the minimum information needed to deliver a notification (container name, action, agent ID) is ever transmitted — no logs, no environment variables, no sensitive data.
 
 ---
 
