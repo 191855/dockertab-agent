@@ -210,14 +210,17 @@ func (c *Client) GetContainer(ctx context.Context, id string) (*ContainerSummary
 		}
 	}
 
-	created, _ := time.Parse(time.RFC3339Nano, inspect.Created)
+	var createdUnix int64
+	if created, err := time.Parse(time.RFC3339Nano, inspect.Created); err == nil {
+		createdUnix = created.Unix()
+	}
 	return &ContainerSummary{
 		ID:      inspect.ID[:12],
 		Name:    name,
 		Image:   inspect.Config.Image,
 		State:   inspect.State.Status,
 		Status:  inspect.State.Status,
-		Created: created.Unix(),
+		Created: createdUnix,
 		Ports:   ports,
 	}, nil
 }

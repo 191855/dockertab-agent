@@ -58,7 +58,11 @@ func main() {
 
 	authService := auth.NewService(cfg.JWTSecret)
 
-	homeDir, _ := os.UserHomeDir()
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("WARNING: failed to determine home directory: %v", err)
+		homeDir = "."
+	}
 	configDir := filepath.Join(homeDir, ".config", "dockertab")
 	if v := os.Getenv("DOCKERTAB_CONFIG"); v != "" {
 		configDir = filepath.Dir(v)
@@ -214,6 +218,7 @@ func main() {
 
 	log.Printf("Received signal %s, shutting down gracefully...", sig)
 	relayCancel()
+	handler.Stop()
 	relayClient.Stop()
 	dockerClient.Close()
 	log.Println("DockerTab Agent stopped.")

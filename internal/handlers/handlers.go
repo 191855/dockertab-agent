@@ -105,6 +105,10 @@ type Handler struct {
 	pairLimiter *pairRateLimiter
 }
 
+func (h *Handler) Stop() {
+	h.pairLimiter.stop()
+}
+
 func NewHandler(dockerClient docker.DockerClient, authService *auth.Service, cfg *config.Config, hcfg HandlerConfig) *Handler {
 	return &Handler{
 		Docker:             dockerClient,
