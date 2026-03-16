@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"sync"
-	"time"
 
 	"github.com/dockertab/agent/internal/docker"
 )
@@ -36,13 +34,7 @@ func NewWatcher(dockerClient docker.DockerClient, store *TokenStore, client *APN
 func (w *Watcher) Start(ctx context.Context) error {
 	log.Println("[Notifications] Docker events watcher started")
 
-	type pendingEntry struct {
-		name  string
-		timer *time.Timer
-	}
-	var pendingMu sync.Mutex
-	pending := make(map[string]*pendingEntry)
-
+	debouncer := NewDebouncer(w)
 	messages, errs := w.docker.Events(ctx)
 	for {
 		select {
@@ -69,40 +61,16 @@ func (w *Watcher) Start(ctx context.Context) error {
 			}
 			switch msg.Action {
 			case "die":
-				pendingMu.Lock()
-				if p, ok := pending[id]; ok {
-					p.timer.Stop()
-				}
-				entry := &pendingEntry{name: name}
-				entry.timer = time.AfterFunc(1500*time.Millisecond, func() {
-					if ctx.Err() != nil {
-						return
-					}
-					pendingMu.Lock()
-					if pending[id] != entry {
-						pendingMu.Unlock()
-						return
-					}
-					delete(pending, id)
-					pendingMu.Unlock()
-					w.push(ctx, id, name, "die")
-				})
-				pending[id] = entry
-				pendingMu.Unlock()
+				debouncer.OnDie(ctx, id, name)
 			case "start":
-				pendingMu.Lock()
-				if p, ok := pending[id]; ok {
-					p.timer.Stop()
-					delete(pending, id)
-					pendingMu.Unlock()
-					w.push(ctx, id, name, "restart")
-				} else {
-					pendingMu.Unlock()
-					w.push(ctx, id, name, "start")
-				}
+				debouncer.OnStart(ctx, id, name)
 			}
 		}
 	}
+}
+
+func (w *Watcher) Send(ctx context.Context, id, name, action string) {
+	w.push(ctx, id, name, action)
 }
 
 func (w *Watcher) push(ctx context.Context, containerID, name, action string) {

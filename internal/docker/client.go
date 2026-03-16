@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"time"
 
@@ -39,6 +40,7 @@ type DockerClient interface {
 	GetHostInfo(ctx context.Context) (*HostInfo, error)
 	ListImages(ctx context.Context) ([]ImageSummary, error)
 	ListVolumes(ctx context.Context) ([]VolumeSummary, error)
+	CheckImageUpdates(ctx context.Context, images []string) (map[string]bool, error)
 
 	StartContainer(ctx context.Context, id string) error
 	StopContainer(ctx context.Context, id string) error
@@ -69,6 +71,15 @@ type VolumeSummary struct {
 	Labels     map[string]string `json:"labels,omitempty"`
 }
 
+const bytesPerMB = 1024 * 1024
+
+func trimContainerName(s string) string {
+	if len(s) > 0 && s[0] == '/' {
+		return s[1:]
+	}
+	return s
+}
+
 var _ DockerClient = (*Client)(nil)
 
 type Client struct {
@@ -88,15 +99,15 @@ type ContainerSummary struct {
 }
 
 type ContainerStats struct {
-	CPUUsage        float64 `json:"cpu_usage"`
-	MemoryUsage     float64 `json:"memory_usage"`
-	MemoryLimit     float64 `json:"memory_limit"`
-	NetInput        float64 `json:"net_input"`
-	NetOutput       float64 `json:"net_output"`
-	BlockRead       float64 `json:"block_read"`        // MB read from disk
-	BlockWrite      float64 `json:"block_write"`       // MB written to disk
-	PIDs            uint64  `json:"pids"`              // Number of processes
-	CPUThrottlePct  float64 `json:"cpu_throttle_pct"` // % of time CPU was throttled
+	CPUUsage       float64 `json:"cpu_usage"`
+	MemoryUsage    float64 `json:"memory_usage"`
+	MemoryLimit    float64 `json:"memory_limit"`
+	NetInput       float64 `json:"net_input"`
+	NetOutput      float64 `json:"net_output"`
+	BlockRead      float64 `json:"block_read"`
+	BlockWrite     float64 `json:"block_write"`
+	PIDs           uint64  `json:"pids"`
+	CPUThrottlePct float64 `json:"cpu_throttle_pct"`
 }
 
 type PortBinding struct {
@@ -153,10 +164,7 @@ func (c *Client) ListContainers(ctx context.Context) ([]ContainerSummary, error)
 	for _, ctr := range containers {
 		name := ""
 		if len(ctr.Names) > 0 {
-			name = ctr.Names[0]
-			if len(name) > 0 && name[0] == '/' {
-				name = name[1:]
-			}
+			name = trimContainerName(ctr.Names[0])
 		}
 
 		ports := make([]PortBinding, 0)
@@ -189,10 +197,7 @@ func (c *Client) GetContainer(ctx context.Context, id string) (*ContainerSummary
 		return nil, fmt.Errorf("container not found: %w", err)
 	}
 
-	name := inspect.Name
-	if len(name) > 0 && name[0] == '/' {
-		name = name[1:]
-	}
+	name := trimContainerName(inspect.Name)
 
 	ports := make([]PortBinding, 0)
 	for containerPort, bindings := range inspect.NetworkSettings.Ports {
@@ -205,17 +210,15 @@ func (c *Client) GetContainer(ctx context.Context, id string) (*ContainerSummary
 		}
 	}
 
+	created, _ := time.Parse(time.RFC3339Nano, inspect.Created)
 	return &ContainerSummary{
-		ID:     inspect.ID[:12],
-		Name:   name,
-		Image:  inspect.Config.Image,
-		State:  inspect.State.Status,
-		Status: inspect.State.Status,
-		Created: func() int64 {
-			t, _ := time.Parse(time.RFC3339Nano, inspect.Created)
-			return t.UnixNano()
-		}(),
-		Ports: ports,
+		ID:      inspect.ID[:12],
+		Name:    name,
+		Image:   inspect.Config.Image,
+		State:   inspect.State.Status,
+		Status:  inspect.State.Status,
+		Created: created.Unix(),
+		Ports:   ports,
 	}, nil
 }
 
@@ -313,7 +316,7 @@ func (c *Client) GetHostInfo(ctx context.Context) (*HostInfo, error) {
 		OS:            info.OperatingSystem,
 		Architecture:  info.Architecture,
 		CPUs:          info.NCPU,
-		MemoryTotal:   float64(info.MemTotal) / 1024 / 1024, // MB
+		MemoryTotal:   float64(info.MemTotal) / bytesPerMB,
 		DockerVersion: version.Version,
 		Containers:    info.Containers,
 		Running:       info.ContainersRunning,
@@ -344,7 +347,7 @@ func (c *Client) ListImages(ctx context.Context) ([]ImageSummary, error) {
 		summaries = append(summaries, ImageSummary{
 			ID:      img.ID[7:19], // strip "sha256:", take 12 chars
 			Tags:    tags,
-			SizeMB:  float64(img.Size) / 1024 / 1024,
+			SizeMB:  float64(img.Size) / bytesPerMB,
 			Created: img.Created,
 		})
 	}
@@ -449,6 +452,44 @@ func (c *Client) Events(ctx context.Context) (<-chan ContainerEvent, <-chan erro
 	return outEvents, outErrs
 }
 
+func (c *Client) CheckImageUpdates(ctx context.Context, images []string) (map[string]bool, error) {
+	result := make(map[string]bool)
+	for _, img := range images {
+		if img == "" || strings.HasPrefix(img, "<none>") || strings.HasPrefix(img, "sha256:") {
+			continue
+		}
+		update, err := c.isImageUpdateAvailable(ctx, img)
+		if err != nil {
+			log.Printf("[image-updates] %s: skipped (%v)", img, err)
+			continue
+		}
+		log.Printf("[image-updates] %s: update=%v", img, update)
+		result[img] = update
+	}
+	return result, nil
+}
+
+func (c *Client) isImageUpdateAvailable(ctx context.Context, imageRef string) (bool, error) {
+	inspect, _, err := c.cli.ImageInspectWithRaw(ctx, imageRef)
+	if err != nil {
+		return false, err
+	}
+	if len(inspect.RepoDigests) == 0 {
+		return false, nil
+	}
+	dist, err := c.cli.DistributionInspect(ctx, imageRef, "")
+	if err != nil {
+		return false, err
+	}
+	remoteDigest := string(dist.Descriptor.Digest)
+	for _, d := range inspect.RepoDigests {
+		if strings.Contains(d, remoteDigest) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 func parseStats(stats *types.StatsJSON) *ContainerStats {
 	cpuDelta := float64(stats.CPUStats.CPUUsage.TotalUsage - stats.PreCPUStats.CPUUsage.TotalUsage)
 	systemDelta := float64(stats.CPUStats.SystemUsage - stats.PreCPUStats.SystemUsage)
@@ -462,8 +503,8 @@ func parseStats(stats *types.StatsJSON) *ContainerStats {
 		cpuPercent = (cpuDelta / systemDelta) * cpuCount * 100.0
 	}
 
-	memUsage := float64(stats.MemoryStats.Usage-stats.MemoryStats.Stats["cache"]) / 1024 / 1024
-	memLimit := float64(stats.MemoryStats.Limit) / 1024 / 1024
+	memUsage := float64(stats.MemoryStats.Usage-stats.MemoryStats.Stats["cache"]) / bytesPerMB
+	memLimit := float64(stats.MemoryStats.Limit) / bytesPerMB
 
 	var netIn, netOut float64
 	for _, v := range stats.Networks {
@@ -491,10 +532,10 @@ func parseStats(stats *types.StatsJSON) *ContainerStats {
 		CPUUsage:       cpuPercent,
 		MemoryUsage:    memUsage,
 		MemoryLimit:    memLimit,
-		NetInput:       netIn / 1024 / 1024,   // MB
-		NetOutput:      netOut / 1024 / 1024,  // MB
-		BlockRead:      blockRead / 1024 / 1024,
-		BlockWrite:     blockWrite / 1024 / 1024,
+		NetInput:       netIn / bytesPerMB,
+		NetOutput:      netOut / bytesPerMB,
+		BlockRead:      blockRead / bytesPerMB,
+		BlockWrite:     blockWrite / bytesPerMB,
 		PIDs:           stats.PidsStats.Current,
 		CPUThrottlePct: cpuThrottlePct,
 	}

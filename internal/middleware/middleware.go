@@ -60,6 +60,6 @@ func CORS() gin.HandlerFunc {
 
 func RequestLogger() gin.HandlerFunc {
 	return gin.LoggerWithConfig(gin.LoggerConfig{
-		SkipPaths: []string{"/healthz"},
+		SkipPaths: []string{"/healthz", "/api/v1/host", "/api/v1/containers"},
 	})
 }

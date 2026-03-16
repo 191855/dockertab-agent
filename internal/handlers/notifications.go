@@ -31,7 +31,6 @@ func (h *Handler) RegisterDeviceToken(c *gin.Context) {
 	deviceID := c.GetString("device_id")
 	h.TokenStore.Register(deviceID, req.DeviceToken, env)
 
-	// Forward to relay so it can push to this device when it connects via LAN/Tailscale instead of relay.
 	if h.RelayRegisterToken != nil {
 		h.RelayRegisterToken(deviceID, req.DeviceToken, env)
 	}

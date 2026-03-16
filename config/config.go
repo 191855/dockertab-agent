@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,98 +48,103 @@ const configFileName = "dockertab-agent.json"
 // DefaultRelayURL is the hosted relay. Override with DOCKERTAB_RELAY_URL for self-hosted deployments.
 const DefaultRelayURL = "wss://iosrelay.dockertab.app"
 
+// NewConfig loads and returns a Config from the given file path, applying
+// environment variable overrides and generating any missing secrets.
+// It does not persist the result; call Save() if needed.
+func NewConfig(path string) (*Config, error) {
+	cfg := &Config{
+		Port:         8377,
+		BindAddr:     "0.0.0.0",
+		DockerSocket: "/var/run/docker.sock",
+		LogLevel:     "info",
+	}
+
+	if data, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(data, cfg); err != nil {
+			return nil, fmt.Errorf("invalid config file: %w", err)
+		}
+	}
+
+	if v := os.Getenv("DOCKERTAB_PORT"); v != "" {
+		if port, err := strconv.Atoi(v); err == nil && port > 0 && port <= 65535 {
+			cfg.Port = port
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: invalid DOCKERTAB_PORT %q, using default %d\n", v, cfg.Port)
+		}
+	}
+	if v := os.Getenv("DOCKERTAB_BIND"); v != "" {
+		cfg.BindAddr = v
+	}
+	if v := os.Getenv("DOCKERTAB_HOST"); v != "" {
+		cfg.ExternalHost = v
+	}
+	if v := os.Getenv("DOCKERTAB_NAME"); v != "" {
+		cfg.Name = v
+	}
+	if v := os.Getenv("DOCKERTAB_API_KEY"); v != "" {
+		cfg.APIKey = v
+	}
+	if v := os.Getenv("DOCKERTAB_JWT_SECRET"); v != "" {
+		cfg.JWTSecret = v
+	}
+	if v := os.Getenv("DOCKERTAB_DOCKER_SOCKET"); v != "" {
+		cfg.DockerSocket = v
+	}
+	if v := os.Getenv("DOCKERTAB_LOG_LEVEL"); v != "" {
+		cfg.LogLevel = v
+	}
+	if v := os.Getenv("DOCKERTAB_RELAY_URL"); v != "" {
+		cfg.RelayURL = v
+	}
+	if v := os.Getenv("DOCKERTAB_RELAY_TOKEN"); v != "" {
+		cfg.RelayToken = v
+	}
+	if v := os.Getenv("DOCKERTAB_APNS_KEY_FILE"); v != "" {
+		cfg.APNsKeyFile = v
+	}
+	if v := os.Getenv("DOCKERTAB_APNS_KEY_ID"); v != "" {
+		cfg.APNsKeyID = v
+	}
+	if v := os.Getenv("DOCKERTAB_APNS_TEAM_ID"); v != "" {
+		cfg.APNsTeamID = v
+	}
+	if v := os.Getenv("DOCKERTAB_APNS_SANDBOX"); v == "true" || v == "1" {
+		cfg.APNsSandbox = true
+	}
+
+	if cfg.AgentID == "" {
+		cfg.AgentID = generateSecret(4)
+	}
+	if cfg.APIKey == "" {
+		cfg.APIKey = generateSecret(32)
+	}
+	if cfg.JWTSecret == "" {
+		cfg.JWTSecret = generateSecret(64)
+	}
+	// relay_token is stable across restarts; included in the pair response so the
+	// iOS app can provision relay access after subscribing.
+	if cfg.RelayToken == "" {
+		cfg.RelayToken = generateSecret(32)
+	}
+
+	if cfg.RelayURL == "" {
+		cfg.RelayURL = DefaultRelayURL
+	}
+
+	return cfg, nil
+}
+
 func Load() (*Config, error) {
 	var loadErr error
 	once.Do(func() {
-		instance = &Config{
-			Port:         8377,
-			BindAddr:     "0.0.0.0",
-			DockerSocket: "/var/run/docker.sock",
-			LogLevel:     "info",
+		instance, loadErr = NewConfig(getConfigPath())
+		if loadErr != nil {
+			return
 		}
-
-		configPath := getConfigPath()
-		if data, err := os.ReadFile(configPath); err == nil {
-			if err := json.Unmarshal(data, instance); err != nil {
-				loadErr = fmt.Errorf("invalid config file: %w", err)
-				return
-			}
-		}
-
-		if v := os.Getenv("DOCKERTAB_PORT"); v != "" {
-			if port, err := strconv.Atoi(v); err == nil && port > 0 && port <= 65535 {
-				instance.Port = port
-			} else {
-				fmt.Fprintf(os.Stderr, "warning: invalid DOCKERTAB_PORT %q, using default %d\n", v, instance.Port)
-			}
-		}
-		if v := os.Getenv("DOCKERTAB_BIND"); v != "" {
-			instance.BindAddr = v
-		}
-		if v := os.Getenv("DOCKERTAB_HOST"); v != "" {
-			instance.ExternalHost = v
-		}
-		if v := os.Getenv("DOCKERTAB_NAME"); v != "" {
-			instance.Name = v
-		}
-		if v := os.Getenv("DOCKERTAB_API_KEY"); v != "" {
-			instance.APIKey = v
-		}
-		if v := os.Getenv("DOCKERTAB_JWT_SECRET"); v != "" {
-			instance.JWTSecret = v
-		}
-		if v := os.Getenv("DOCKERTAB_DOCKER_SOCKET"); v != "" {
-			instance.DockerSocket = v
-		}
-		if v := os.Getenv("DOCKERTAB_LOG_LEVEL"); v != "" {
-			instance.LogLevel = v
-		}
-		if v := os.Getenv("DOCKERTAB_RELAY_URL"); v != "" {
-			instance.RelayURL = v
-		}
-		if v := os.Getenv("DOCKERTAB_RELAY_TOKEN"); v != "" {
-			instance.RelayToken = v
-		}
-		if v := os.Getenv("DOCKERTAB_APNS_KEY_FILE"); v != "" {
-			instance.APNsKeyFile = v
-		}
-		if v := os.Getenv("DOCKERTAB_APNS_KEY_ID"); v != "" {
-			instance.APNsKeyID = v
-		}
-		if v := os.Getenv("DOCKERTAB_APNS_TEAM_ID"); v != "" {
-			instance.APNsTeamID = v
-		}
-		if v := os.Getenv("DOCKERTAB_APNS_SANDBOX"); v == "true" || v == "1" {
-			instance.APNsSandbox = true
-		}
-
-		if instance.AgentID == "" {
-			instance.AgentID = generateSecret(4) // 8-char hex
-		}
-		if instance.APIKey == "" {
-			instance.APIKey = generateSecret(32)
-		}
-		if instance.JWTSecret == "" {
-			instance.JWTSecret = generateSecret(64)
-		}
-		// relay_token is stable across restarts; included in the pair response so the
-		// iOS app can provision relay access after subscribing.
-		if instance.RelayToken == "" {
-			instance.RelayToken = generateSecret(32)
-		}
-
-		// Always prefer the compiled-in default so stale saved values don't persist
-		// across binary updates. Explicit custom URLs (via env or config) are preserved.
-		knownDefaults := []string{"", "wss://relay.dockertab.app"}
-		if slices.Contains(knownDefaults, instance.RelayURL) {
-			instance.RelayURL = DefaultRelayURL
-		}
-
 		if err := instance.Save(); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not save config: %v\n", err)
 		}
 	})
-
 	return instance, loadErr
 }
 

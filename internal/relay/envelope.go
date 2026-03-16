@@ -7,28 +7,28 @@ import (
 
 // Message types exchanged over the relay WebSocket tunnel.
 const (
-	TypeAuth               = "auth"               // Agent → Relay: authenticate
-	TypeAuthOK             = "auth_ok"             // Relay → Agent: auth accepted
-	TypeClientAuth         = "client_auth"         // Relay → Agent: verify iOS client JWT
-	TypeClientAuthResult   = "client_auth_result"  // Agent → Relay: accept/reject
-	TypeClientReAuth       = "client_reauth"       // Relay → Agent: re-pair with API key
-	TypeClientReAuthResult = "client_reauth_result" // Agent → Relay: fresh JWT
+	TypeAuth               = "auth"
+	TypeAuthOK             = "auth_ok"
+	TypeClientAuth         = "client_auth"
+	TypeClientAuthResult   = "client_auth_result"
+	TypeClientReAuth       = "client_reauth"
+	TypeClientReAuthResult = "client_reauth_result"
 
-	TypeRequest  = "request"  // Client → Agent (via Relay): HTTP request
-	TypeResponse = "response" // Agent → Client (via Relay): HTTP response
+	TypeRequest  = "request"
+	TypeResponse = "response"
 
-	TypeStreamOpen   = "stream_open"   // Client → Agent: open a stream
-	TypeStreamData   = "stream_data"   // Agent → Client: one frame of output
-	TypeStreamInput  = "stream_input"  // Client → Agent: stdin bytes (base64)
-	TypeStreamResize = "stream_resize" // Client → Agent: PTY resize {"rows":N,"cols":N}
-	TypeStreamClose  = "stream_close"  // Either side: close a stream
+	TypeStreamOpen   = "stream_open"
+	TypeStreamData   = "stream_data"
+	TypeStreamInput  = "stream_input"  // base64-encoded stdin bytes
+	TypeStreamResize = "stream_resize" // {"rows":N,"cols":N}
+	TypeStreamClose  = "stream_close"
 
 	TypePing  = "ping"
 	TypePong  = "pong"
 	TypeError = "error"
 
-	TypeNotification = "notification"  // Agent → Relay: container event for APNs dispatch
-	TypeRegisterAPNs = "register_apns" // Agent → Relay: device token from LAN/Tailscale client
+	TypeNotification = "notification"
+	TypeRegisterAPNs = "register_apns" // device token from LAN/Tailscale clients bypassing the relay WebSocket
 )
 
 type Envelope struct {

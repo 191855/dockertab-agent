@@ -13,7 +13,6 @@ type Service struct {
 	expiration time.Duration
 }
 
-// Claims extends jwt.RegisteredClaims with DockerTab device fields.
 type Claims struct {
 	DeviceID   string `json:"device_id"`
 	DeviceName string `json:"device_name"`
