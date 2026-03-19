@@ -277,6 +277,11 @@ func (h *Handler) StreamContainerLogs(c *gin.Context) {
 	id := c.Param("id")
 	ctx := c.Request.Context()
 
+	tail := 100
+	if n, err := strconv.Atoi(c.DefaultQuery("lines", "100")); err == nil && n > 0 && n <= 5000 {
+		tail = n
+	}
+
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		log.Printf("websocket upgrade failed: %v", err)
@@ -284,7 +289,7 @@ func (h *Handler) StreamContainerLogs(c *gin.Context) {
 	}
 	defer conn.Close()
 
-	reader, err := h.Docker.StreamLogs(ctx, id, 50)
+	reader, err := h.Docker.StreamLogs(ctx, id, tail)
 	if err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
 		conn.WriteMessage(websocket.TextMessage, errMsg)

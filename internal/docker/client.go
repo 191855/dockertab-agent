@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
+	"github.com/distribution/reference"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
@@ -18,6 +21,7 @@ import (
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 type ContainerEvent struct {
@@ -485,12 +489,181 @@ func (c *Client) isImageUpdateAvailable(ctx context.Context, imageRef string) (b
 		return false, err
 	}
 	remoteDigest := string(dist.Descriptor.Digest)
+
 	for _, d := range inspect.RepoDigests {
 		if strings.Contains(d, remoteDigest) {
 			return false, nil
 		}
 	}
+
+	if isManifestListType(string(dist.Descriptor.MediaType)) {
+		platformDigest, err := fetchPlatformDigest(ctx, imageRef, inspect.Os, inspect.Architecture)
+		if err == nil && platformDigest != "" {
+			for _, d := range inspect.RepoDigests {
+				if strings.Contains(d, platformDigest) {
+					return false, nil
+				}
+			}
+		}
+	}
+
 	return true, nil
+}
+
+func isManifestListType(mediaType string) bool {
+	return mediaType == "application/vnd.docker.distribution.manifest.list.v2+json" ||
+		mediaType == "application/vnd.oci.image.index.v1+json"
+}
+
+func fetchPlatformDigest(ctx context.Context, imageRef, osName, arch string) (string, error) {
+	named, err := reference.ParseNormalizedNamed(imageRef)
+	if err != nil {
+		return "", err
+	}
+	named = reference.TagNameOnly(named)
+	registry := reference.Domain(named)
+	repo := reference.Path(named)
+	if registry == "docker.io" {
+		registry = "registry-1.docker.io"
+	}
+
+	var ref string
+	if tagged, ok := named.(reference.Tagged); ok {
+		ref = tagged.Tag()
+	} else if digested, ok := named.(reference.Digested); ok {
+		ref = string(digested.Digest())
+	} else {
+		return "", fmt.Errorf("no tag or digest in image ref")
+	}
+
+	accept := "application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json"
+	manifestURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s", registry, repo, ref)
+	body, err := registryGet(ctx, manifestURL, accept)
+	if err != nil {
+		return "", err
+	}
+
+	var idx ocispec.Index
+	if err := json.Unmarshal(body, &idx); err != nil {
+		return "", err
+	}
+
+	for _, m := range idx.Manifests {
+		if m.Platform == nil {
+			continue
+		}
+		if m.Platform.OS == osName && m.Platform.Architecture == arch {
+			return string(m.Digest), nil
+		}
+	}
+	return "", nil
+}
+
+func registryGet(ctx context.Context, rawURL, accept string) ([]byte, error) {
+	hc := &http.Client{Timeout: 10 * time.Second}
+
+	do := func(token string) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", accept)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		return hc.Do(req)
+	}
+
+	resp, err := do("")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		token, err := exchangeRegistryToken(ctx, hc, resp.Header.Get("Www-Authenticate"))
+		if err != nil {
+			return nil, err
+		}
+		resp2, err := do(token)
+		if err != nil {
+			return nil, err
+		}
+		defer resp2.Body.Close()
+		if resp2.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("registry %s", resp2.Status)
+		}
+		return io.ReadAll(io.LimitReader(resp2.Body, 1<<20))
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("registry %s", resp.Status)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+}
+
+func exchangeRegistryToken(ctx context.Context, hc *http.Client, challenge string) (string, error) {
+	const bearer = "Bearer "
+	if !strings.HasPrefix(challenge, bearer) {
+		return "", fmt.Errorf("unsupported auth challenge")
+	}
+	params := parseKeyValues(challenge[len(bearer):])
+	realm := params["realm"]
+	if realm == "" {
+		return "", fmt.Errorf("missing realm in auth challenge")
+	}
+
+	q := url.Values{}
+	if s := params["service"]; s != "" {
+		q.Set("service", s)
+	}
+	if s := params["scope"]; s != "" {
+		q.Set("scope", s)
+	}
+	tokenURL := realm
+	if len(q) > 0 {
+		tokenURL += "?" + q.Encode()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tokenURL, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var tr struct {
+		Token       string `json:"token"`
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
+		return "", err
+	}
+	if tr.Token != "" {
+		return tr.Token, nil
+	}
+	if tr.AccessToken != "" {
+		return tr.AccessToken, nil
+	}
+	return "", fmt.Errorf("no token in response")
+}
+
+func parseKeyValues(s string) map[string]string {
+	out := make(map[string]string)
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		idx := strings.IndexByte(part, '=')
+		if idx < 0 {
+			continue
+		}
+		key := strings.TrimSpace(part[:idx])
+		val := strings.Trim(strings.TrimSpace(part[idx+1:]), `"`)
+		out[key] = val
+	}
+	return out
 }
 
 func parseStats(stats *types.StatsJSON) *ContainerStats {
