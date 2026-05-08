@@ -29,8 +29,6 @@ func NewWatcher(dockerClient docker.DockerClient, store *TokenStore, client *APN
 	}
 }
 
-// Start processes Docker events until ctx is cancelled or the stream errors.
-// die+start pairs within 1.5s are collapsed into a single "restart" notification.
 func (w *Watcher) Start(ctx context.Context) error {
 	log.Println("[Notifications] Docker events watcher started")
 

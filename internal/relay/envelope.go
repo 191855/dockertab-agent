@@ -5,7 +5,6 @@ import (
 	"log"
 )
 
-// Message types exchanged over the relay WebSocket tunnel.
 const (
 	TypeAuth               = "auth"
 	TypeAuthOK             = "auth_ok"
@@ -19,8 +18,8 @@ const (
 
 	TypeStreamOpen   = "stream_open"
 	TypeStreamData   = "stream_data"
-	TypeStreamInput  = "stream_input"  // base64-encoded stdin bytes
-	TypeStreamResize = "stream_resize" // {"rows":N,"cols":N}
+	TypeStreamInput  = "stream_input"
+	TypeStreamResize = "stream_resize"
 	TypeStreamClose  = "stream_close"
 
 	TypePing  = "ping"
@@ -28,20 +27,20 @@ const (
 	TypeError = "error"
 
 	TypeNotification = "notification"
-	TypeRegisterAPNs = "register_apns" // device token from LAN/Tailscale clients bypassing the relay WebSocket
+	TypeRegisterAPNs = "register_apns"
 )
 
 type Envelope struct {
 	Type      string          `json:"type"`
-	RequestID string          `json:"request_id,omitempty"` // correlates request/response and stream frames
-	ClientID  string          `json:"client_id,omitempty"`  // relay-assigned iOS client identifier
+	RequestID string          `json:"request_id,omitempty"`
+	ClientID  string          `json:"client_id,omitempty"`
 	Payload   json.RawMessage `json:"payload,omitempty"`
 }
 
 type AuthPayload struct {
 	AgentID string `json:"agent_id"`
-	Token   string `json:"token"`          // relay token (agent) or JWT (client)
-	Type    string `json:"type,omitempty"` // "jwt" (default) or "api_key" (re-pair)
+	Token   string `json:"token"`
+	Type    string `json:"type,omitempty"`
 }
 
 type ClientAuthPayload struct {
@@ -95,15 +94,15 @@ type ErrorPayload struct {
 type NotificationPayload struct {
 	ContainerID   string `json:"container_id"`
 	ContainerName string `json:"container_name"`
-	Action        string `json:"action"` // "start" | "stop" | "die" | "kill"
+	Action        string `json:"action"`
 	AgentName     string `json:"agent_name,omitempty"`
 }
 
 type RegisterAPNsPayload struct {
 	DeviceID    string   `json:"device_id"`
 	DeviceToken string   `json:"device_token"`
-	Environment string   `json:"environment"`      // "development" | "production"
-	Events      []string `json:"events,omitempty"` // empty = all events
+	Environment string   `json:"environment"`
+	Events      []string `json:"events,omitempty"`
 }
 
 func MustMarshal(v any) json.RawMessage {

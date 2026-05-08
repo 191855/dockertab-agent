@@ -88,8 +88,6 @@ func main() {
 	router.Use(gin.Recovery())
 	router.Use(middleware.CORS())
 
-	// Relay client always starts — subscription state is enforced server-side.
-	// The agent connects in pending state until a subscriber provisions access via the iOS app.
 	relayCtx, relayCancel := context.WithCancel(context.Background())
 	relayClient := relay.NewClient(cfg, authService, dockerClient, router, cfg.AgentID)
 
@@ -157,7 +155,6 @@ func main() {
 	}()
 
 	if apnsClient != nil {
-		// Only used in self-hosted setups without a relay.
 		watcher := notifications.NewWatcher(dockerClient, tokenStore, apnsClient, cfg.AgentID, cfg.Name, cfg.APNsSandbox)
 		go func() {
 			if err := watcher.Start(relayCtx); err != nil && relayCtx.Err() == nil {
@@ -203,7 +200,7 @@ func main() {
 	fmt.Fprintln(log.Writer())
 	log.Println("──────────────────────────────────────────────")
 
-	// Started after QR code is printed to avoid relay log lines corrupting the output.
+	// Start after QR output to prevent relay log lines from corrupting the terminal block.
 	go relayClient.Start(relayCtx)
 
 	go func() {

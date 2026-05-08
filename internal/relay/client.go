@@ -25,8 +25,6 @@ import (
 )
 
 var validContainerID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.\-]{0,127}$`)
-
-// containerPathRe extracts the container ID from /api/v1/containers/{id}/...
 var containerPathRe = regexp.MustCompile(`^/api/v1/containers/([^/]+)/`)
 
 type streamEntry struct {
@@ -42,13 +40,13 @@ type Client struct {
 	docker      docker.DockerClient
 	router      http.Handler
 	agentID     string
-	relayJWT    string // Internal JWT for authenticating relay-forwarded requests
+	relayJWT    string
 
 	conn   *websocket.Conn
 	connMu sync.Mutex
 	send   chan []byte
 
-	streams   map[string]*streamEntry // request_id → {clientID, cancel, stdin, execID}
+	streams   map[string]*streamEntry
 	streamsMu sync.Mutex
 
 	backoffAttempt int
@@ -113,7 +111,6 @@ func (c *Client) IsConnected() bool {
 	return c.conn != nil
 }
 
-// RegisterDeviceToken forwards a token to the relay for LAN/Tailscale clients that bypass the relay WebSocket.
 func (c *Client) RegisterDeviceToken(deviceID, token, environment string, events []string) {
 	c.sendEnvelope(Envelope{
 		Type: TypeRegisterAPNs,
@@ -141,7 +138,7 @@ func (c *Client) SendNotification(containerID, containerName, action string) {
 func (c *Client) backoff(ctx context.Context) bool {
 	c.backoffAttempt++
 	delay := time.Duration(math.Min(float64(time.Second)*math.Pow(2, float64(c.backoffAttempt)), float64(60*time.Second)))
-	jitter := time.Duration(float64(delay) * (0.8 + 0.4*rand.Float64())) // +/- 20%
+	jitter := time.Duration(float64(delay) * (0.8 + 0.4*rand.Float64()))
 
 	log.Printf("[relay] reconnecting in %s...", jitter.Round(time.Millisecond))
 
@@ -268,7 +265,6 @@ func (c *Client) writeLoop(ctx context.Context, conn *websocket.Conn) {
 		case msg := <-c.send:
 			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
 				log.Printf("[relay] write failed: %v", err)
-				// Re-enqueue for the next connection attempt.
 				select {
 				case c.send <- msg:
 				default:
@@ -388,9 +384,7 @@ func (c *Client) handleRequest(ctx context.Context, env Envelope) {
 	for k, v := range payload.Headers {
 		httpReq.Header.Set(k, v)
 	}
-
-	// The client already authenticated at the relay; inject the internal JWT
-	// so the request passes the agent's JWT middleware.
+	// Relay-forwarded requests skip the iOS↔agent JWT; inject the internal one instead.
 	if c.relayJWT != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+c.relayJWT)
 	}
@@ -533,7 +527,6 @@ func (c *Client) streamStats(ctx context.Context, env Envelope, containerID stri
 	}
 }
 
-// PTY output is sent as base64-encoded stream_data frames.
 func (c *Client) streamExec(ctx context.Context, env Envelope, containerID string, rows, cols int) {
 	var execID string
 	var err error

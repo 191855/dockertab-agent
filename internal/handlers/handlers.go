@@ -86,7 +86,6 @@ type HandlerConfig struct {
 	Version            string
 	TokenStore         *notifications.TokenStore
 	RelayConnected     func() bool
-	// Forwards an APNs token to the relay for LAN/Tailscale clients that bypass the relay WebSocket.
 	RelayRegisterToken func(deviceID, token, environment string, events []string)
 }
 
@@ -267,8 +266,6 @@ func (h *Handler) GetContainerLogs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"logs": logs, "lines": lines})
 }
 
-// CheckOrigin is intentionally permissive: the agent authenticates via JWT middleware,
-// so browser same-origin restrictions provide no additional security here.
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
@@ -409,8 +406,6 @@ func (h *Handler) GetContainerEnv(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"env": pairs, "count": len(pairs)})
 }
 
-// StreamContainerExec attaches an interactive shell via WebSocket.
-// Binary frames carry raw PTY bytes; text frames are JSON resize commands {"rows":N,"cols":N}.
 func (h *Handler) StreamContainerExec(c *gin.Context) {
 	id := c.Param("id")
 	ctx := c.Request.Context()
@@ -431,8 +426,6 @@ func (h *Handler) StreamContainerExec(c *gin.Context) {
 	}
 	defer conn.Close()
 
-	// ExecCreate can succeed even when the binary is absent; the fallback
-	// only triggers if Docker itself reports an error (e.g. container not running).
 	var execID string
 	for _, shell := range []string{"/bin/sh", "/bin/bash", "/bin/ash"} {
 		execID, err = h.Docker.ExecCreate(ctx, id, []string{shell}, rows, cols)
@@ -497,8 +490,7 @@ func (h *Handler) StreamContainerExec(c *gin.Context) {
 	select {
 	case <-done:
 	case <-ctx.Done():
-		// Best-effort shell exit: writing to the PTY is the only way to signal
-		// the subprocess since exec sessions have no separate control channel.
+		// Exec sessions have no separate control channel; writing exit is the only way to terminate the shell.
 		io.WriteString(resp.Conn, "exit\n")
 	}
 }

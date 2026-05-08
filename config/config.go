@@ -16,8 +16,8 @@ import (
 type Config struct {
 	Port         int    `json:"port"`
 	BindAddr     string `json:"bind_addr"`
-	ExternalHost string `json:"external_host"` // LAN IP or hostname for QR pairing (e.g. "192.168.1.50")
-	Name         string `json:"name"`          // Friendly display name (e.g. "Home NAS", "Dev Server")
+	ExternalHost string `json:"external_host"`
+	Name         string `json:"name"`
 
 	AgentID string `json:"agent_id"`
 
@@ -28,14 +28,13 @@ type Config struct {
 
 	LogLevel string `json:"log_level"`
 
-	RelayURL   string `json:"relay_url,omitempty"`   // e.g. "wss://relay.dockertab.com"
-	RelayToken string `json:"relay_token,omitempty"` // Auth token for relay server
+	RelayURL   string `json:"relay_url,omitempty"`
+	RelayToken string `json:"relay_token,omitempty"`
 
-	// APNs push notifications (optional — disabled when not configured)
-	APNsKeyFile string `json:"apns_key_file,omitempty"` // Path to .p8 private key
-	APNsKeyID   string `json:"apns_key_id,omitempty"`   // 10-char key ID
-	APNsTeamID  string `json:"apns_team_id,omitempty"`  // 10-char team ID
-	APNsSandbox bool   `json:"apns_sandbox"`            // true = sandbox (dev), false = production
+	APNsKeyFile string `json:"apns_key_file,omitempty"`
+	APNsKeyID   string `json:"apns_key_id,omitempty"`
+	APNsTeamID  string `json:"apns_team_id,omitempty"`
+	APNsSandbox bool   `json:"apns_sandbox"` // true = sandbox endpoint
 }
 
 var (
@@ -45,12 +44,8 @@ var (
 
 const configFileName = "dockertab-agent.json"
 
-// DefaultRelayURL is the hosted relay. Override with DOCKERTAB_RELAY_URL for self-hosted deployments.
 const DefaultRelayURL = "wss://iosrelay.dockertab.app"
 
-// NewConfig loads and returns a Config from the given file path, applying
-// environment variable overrides and generating any missing secrets.
-// It does not persist the result; call Save() if needed.
 func NewConfig(path string) (*Config, error) {
 	cfg := &Config{
 		Port:         8377,
@@ -121,8 +116,6 @@ func NewConfig(path string) (*Config, error) {
 	if cfg.JWTSecret == "" {
 		cfg.JWTSecret = generateSecret(64)
 	}
-	// relay_token is stable across restarts; included in the pair response so the
-	// iOS app can provision relay access after subscribing.
 	if cfg.RelayToken == "" {
 		cfg.RelayToken = generateSecret(32)
 	}
@@ -148,14 +141,13 @@ func Load() (*Config, error) {
 	return instance, loadErr
 }
 
-// Save writes the config to disk. The default relay URL is not persisted so
-// future binary updates automatically pick up a new DefaultRelayURL.
 func (c *Config) Save() error {
 	configPath := getConfigPath()
 	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
 		return err
 	}
 	toSave := *c
+	// Don't persist the default relay URL so binary updates pick up a new default automatically.
 	if toSave.RelayURL == DefaultRelayURL {
 		toSave.RelayURL = ""
 	}
@@ -180,15 +172,12 @@ func (c *Config) PairingHost() string {
 	return c.ListenAddr()
 }
 
-// detectLANIP returns the best LAN IPv4 for QR pairing.
-// Inside Docker it resolves host.docker.internal; otherwise it scans interfaces,
-// skipping Docker bridges, and prefers 192.168.x.x then 10.x.x.x.
 func detectLANIP() string {
-	// /.dockerenv is created by the Docker runtime.
+	// Inside Docker, resolve the host machine's LAN IP via the magic hostname.
 	if _, err := os.Stat("/.dockerenv"); err == nil {
 		if addrs, err := net.LookupHost("host.docker.internal"); err == nil && len(addrs) > 0 {
 			ip := addrs[0]
-			// 192.168.65.x is Docker Desktop's internal VM gateway — not the LAN IP.
+			// 192.168.65.x is Docker Desktop's internal VM bridge, not the user's LAN.
 			if !strings.HasPrefix(ip, "192.168.65.") {
 				return ip
 			}

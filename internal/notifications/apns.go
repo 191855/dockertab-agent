@@ -19,8 +19,6 @@ import (
 
 const apnsBundleID = "com.dockertab.app"
 
-// TokenExpiredError is returned when APNs responds with 410 (Unregistered),
-// indicating the device token is no longer valid and should be removed.
 type TokenExpiredError struct {
 	DeviceToken string
 	Reason      string
@@ -35,7 +33,6 @@ type APNsClient struct {
 	teamID string
 	key    *ecdsa.PrivateKey
 
-	// JWT token cache (valid 60 min; refresh at 55)
 	mu       sync.Mutex
 	token    string
 	tokenExp time.Time
@@ -72,7 +69,6 @@ func NewAPNsClient(keyFile, keyID, teamID string) (*APNsClient, error) {
 	}, nil
 }
 
-// bearerToken returns a cached ES256 JWT, refreshing every 55 minutes (APNs tokens expire after 60).
 func (c *APNsClient) bearerToken() (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

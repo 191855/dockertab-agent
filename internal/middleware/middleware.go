@@ -40,8 +40,6 @@ func JWTAuth(authService *auth.Service) gin.HandlerFunc {
 	}
 }
 
-// CORS adds permissive CORS headers. The wildcard origin is intentional — the agent
-// runs on a local network and all sensitive endpoints require JWT auth regardless.
 func CORS() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")

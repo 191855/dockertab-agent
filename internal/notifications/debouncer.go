@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// Sender receives debounced container lifecycle notifications.
 type Sender interface {
 	Send(ctx context.Context, id, name, action string)
 }
@@ -16,7 +15,6 @@ type debounceEntry struct {
 	timer *time.Timer
 }
 
-// Debouncer collapses die+start pairs within 1.5s into a single "restart" notification.
 type Debouncer struct {
 	sender  Sender
 	mu      sync.Mutex
