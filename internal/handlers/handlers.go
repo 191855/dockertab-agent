@@ -87,7 +87,7 @@ type HandlerConfig struct {
 	TokenStore         *notifications.TokenStore
 	RelayConnected     func() bool
 	// Forwards an APNs token to the relay for LAN/Tailscale clients that bypass the relay WebSocket.
-	RelayRegisterToken func(deviceID, token, environment string)
+	RelayRegisterToken func(deviceID, token, environment string, events []string)
 }
 
 type Handler struct {
@@ -100,7 +100,7 @@ type Handler struct {
 
 	RelayConnected     func() bool
 	TokenStore         *notifications.TokenStore
-	RelayRegisterToken func(deviceID, token, environment string)
+	RelayRegisterToken func(deviceID, token, environment string, events []string)
 
 	pairLimiter *pairRateLimiter
 }

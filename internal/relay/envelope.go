@@ -100,9 +100,10 @@ type NotificationPayload struct {
 }
 
 type RegisterAPNsPayload struct {
-	DeviceID    string `json:"device_id"`
-	DeviceToken string `json:"device_token"`
-	Environment string `json:"environment"` // "development" | "production"
+	DeviceID    string   `json:"device_id"`
+	DeviceToken string   `json:"device_token"`
+	Environment string   `json:"environment"`      // "development" | "production"
+	Events      []string `json:"events,omitempty"` // empty = all events
 }
 
 func MustMarshal(v any) json.RawMessage {

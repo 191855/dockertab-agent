@@ -7,8 +7,9 @@ import (
 )
 
 type registerTokenRequest struct {
-	DeviceToken string `json:"device_token" binding:"required"`
-	Environment string `json:"environment"` // "development" | "production"
+	DeviceToken string   `json:"device_token" binding:"required"`
+	Environment string   `json:"environment"`          // "development" | "production"
+	Events      []string `json:"events,omitempty"`     // empty = all events
 }
 
 func (h *Handler) RegisterDeviceToken(c *gin.Context) {
@@ -29,10 +30,10 @@ func (h *Handler) RegisterDeviceToken(c *gin.Context) {
 	}
 
 	deviceID := c.GetString("device_id")
-	h.TokenStore.Register(deviceID, req.DeviceToken, env)
+	h.TokenStore.Register(deviceID, req.DeviceToken, env, req.Events)
 
 	if h.RelayRegisterToken != nil {
-		h.RelayRegisterToken(deviceID, req.DeviceToken, env)
+		h.RelayRegisterToken(deviceID, req.DeviceToken, env, req.Events)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"registered": true, "environment": env})

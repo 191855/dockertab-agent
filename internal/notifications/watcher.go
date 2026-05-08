@@ -69,6 +69,15 @@ func (w *Watcher) Start(ctx context.Context) error {
 	}
 }
 
+func containsEvent(events []string, action string) bool {
+	for _, e := range events {
+		if e == action {
+			return true
+		}
+	}
+	return false
+}
+
 func (w *Watcher) Send(ctx context.Context, id, name, action string) {
 	w.push(ctx, id, name, action)
 }
@@ -99,6 +108,9 @@ func (w *Watcher) push(ctx context.Context, containerID, name, action string) {
 		return
 	}
 	for _, record := range tokens {
+		if len(record.Events) > 0 && !containsEvent(record.Events, action) {
+			continue
+		}
 		sandbox := w.sandbox || record.Environment == "development"
 		if err := w.client.Push(ctx, record.Token, title, body, containerID, name, w.agentID, sandbox); err != nil {
 			var expired *TokenExpiredError

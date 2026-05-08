@@ -114,13 +114,14 @@ func (c *Client) IsConnected() bool {
 }
 
 // RegisterDeviceToken forwards a token to the relay for LAN/Tailscale clients that bypass the relay WebSocket.
-func (c *Client) RegisterDeviceToken(deviceID, token, environment string) {
+func (c *Client) RegisterDeviceToken(deviceID, token, environment string, events []string) {
 	c.sendEnvelope(Envelope{
 		Type: TypeRegisterAPNs,
 		Payload: MustMarshal(RegisterAPNsPayload{
 			DeviceID:    deviceID,
 			DeviceToken: token,
 			Environment: environment,
+			Events:      events,
 		}),
 	})
 }
