@@ -7,9 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
-	"time"
 
 	"path/filepath"
 
@@ -24,17 +22,25 @@ import (
 	qrterminal "github.com/mdp/qrterminal/v3"
 )
 
-const banner = `
+var agentVersion = "dev"
+
+type relaySender struct{ c *relay.Client }
+
+func (s relaySender) Send(_ context.Context, id, name, action string) {
+	log.Printf("[notifications] dispatching relay notification: action=%s container=%s", action, name)
+	s.c.SendNotification(id, name, action)
+}
+
+const bannerBase = `
   ____             _           _____     _
  |  _ \  ___   ___| | _____ _ |_   _|_ _| |__
  | | | |/ _ \ / __| |/ / _ \ '__| |/ _' | '_ \
  | |_| | (_) | (__|   <  __/ |  | | (_| | |_) |
  |____/ \___/ \___|_|\_\___|_|  |_|\__,_|_.__/
-                                    Agent v0.1.0
-`
+                                    Agent v`
 
 func main() {
-	fmt.Print(banner)
+	fmt.Print(bannerBase + agentVersion + "\n")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -51,15 +57,17 @@ func main() {
 	log.Println("Connected to Docker daemon")
 
 	authService := auth.NewService(cfg.JWTSecret)
-	handler := handlers.NewHandler(dockerClient, authService, cfg)
 
-	// Push notifications — token store is always created; APNs client is optional
-	configDir := filepath.Join(func() string { h, _ := os.UserHomeDir(); return h }(), ".config", "dockertab")
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("WARNING: failed to determine home directory: %v", err)
+		homeDir = "."
+	}
+	configDir := filepath.Join(homeDir, ".config", "dockertab")
 	if v := os.Getenv("DOCKERTAB_CONFIG"); v != "" {
 		configDir = filepath.Dir(v)
 	}
 	tokenStore := notifications.NewTokenStore(configDir)
-	handler.TokenStore = tokenStore
 
 	var apnsClient *notifications.APNsClient
 	if cfg.APNsConfigured() {
@@ -80,6 +88,16 @@ func main() {
 	router.Use(gin.Recovery())
 	router.Use(middleware.CORS())
 
+	relayCtx, relayCancel := context.WithCancel(context.Background())
+	relayClient := relay.NewClient(cfg, authService, dockerClient, router, cfg.AgentID)
+
+	handler := handlers.NewHandler(dockerClient, authService, cfg, handlers.HandlerConfig{
+		Version:            agentVersion,
+		TokenStore:         tokenStore,
+		RelayConnected:     relayClient.IsConnected,
+		RelayRegisterToken: relayClient.RegisterDeviceToken,
+	})
+
 	router.GET("/healthz", handler.Healthz)
 	router.POST("/api/v1/pair", handler.Pair)
 
@@ -98,8 +116,8 @@ func main() {
 		api.GET("/containers/:id/env", handler.GetContainerEnv)
 
 		api.GET("/images", handler.ListImages)
+		api.GET("/image-updates", handler.CheckImageUpdates)
 
-		// Volumes (premium)
 		api.GET("/volumes", handler.ListVolumes)
 
 		api.GET("/containers/:id/logs/stream", handler.StreamContainerLogs)
@@ -110,22 +128,7 @@ func main() {
 		api.DELETE("/notifications/unregister", handler.UnregisterDeviceToken)
 	}
 
-	// Relay client always starts — subscription state is enforced server-side.
-	// The agent connects in pending state until a subscriber provisions access via the iOS app.
-	relayCtx, relayCancel := context.WithCancel(context.Background())
-	relayClient := relay.NewClient(cfg, authService, dockerClient, router, handler.AgentID)
-	handler.RelayConnected = relayClient.IsConnected
-	handler.RelayRegisterToken = relayClient.RegisterDeviceToken
-
-	// Debounce die+start pairs: if a "start" arrives within 1.5s of a "die"
-	// for the same container, send "restart" instead of separate notifications.
-	type pendingEntry struct {
-		name  string
-		timer *time.Timer
-	}
-	var pendingMu sync.Mutex
-	pending := make(map[string]*pendingEntry)
-
+	debouncer := notifications.NewDebouncer(relaySender{c: relayClient})
 	go func() {
 		msgs, errs := dockerClient.Events(relayCtx)
 		for {
@@ -141,50 +144,17 @@ func main() {
 				if !ok {
 					return
 				}
-				id, name := event.ContainerID, event.ContainerName
 				switch event.Action {
 				case "die":
-					pendingMu.Lock()
-					if p, ok := pending[id]; ok {
-						p.timer.Stop()
-					}
-					entry := &pendingEntry{name: name}
-					entry.timer = time.AfterFunc(1500*time.Millisecond, func() {
-						if relayCtx.Err() != nil {
-							return
-						}
-						pendingMu.Lock()
-						if pending[id] != entry {
-							pendingMu.Unlock()
-							return
-						}
-						delete(pending, id)
-						pendingMu.Unlock()
-						log.Printf("[notifications] dispatching relay notification: action=die container=%s", name)
-						relayClient.SendNotification(id, name, "die")
-					})
-					pending[id] = entry
-					pendingMu.Unlock()
+					debouncer.OnDie(relayCtx, event.ContainerID, event.ContainerName)
 				case "start":
-					pendingMu.Lock()
-					if p, ok := pending[id]; ok {
-						p.timer.Stop()
-						delete(pending, id)
-						pendingMu.Unlock()
-						log.Printf("[notifications] dispatching relay notification: action=restart container=%s", name)
-						relayClient.SendNotification(id, name, "restart")
-					} else {
-						pendingMu.Unlock()
-						log.Printf("[notifications] dispatching relay notification: action=start container=%s", name)
-						relayClient.SendNotification(id, name, "start")
-					}
+					debouncer.OnStart(relayCtx, event.ContainerID, event.ContainerName)
 				}
 			}
 		}
 	}()
 
 	if apnsClient != nil {
-		// Only used in self-hosted setups without a relay.
 		watcher := notifications.NewWatcher(dockerClient, tokenStore, apnsClient, cfg.AgentID, cfg.Name, cfg.APNsSandbox)
 		go func() {
 			if err := watcher.Start(relayCtx); err != nil && relayCtx.Err() == nil {
@@ -215,7 +185,7 @@ func main() {
 		"host":     cfg.PairingHost(),
 		"api_key":  cfg.APIKey,
 		"agent_id": handler.AgentID,
-		"version":  "0.1.0",
+		"version":  agentVersion,
 	}
 	if cfg.Name != "" {
 		pairingPayload["name"] = cfg.Name
@@ -230,7 +200,7 @@ func main() {
 	fmt.Fprintln(log.Writer())
 	log.Println("──────────────────────────────────────────────")
 
-	// Started after QR code is printed to avoid relay log lines corrupting the output.
+	// Start after QR output to prevent relay log lines from corrupting the terminal block.
 	go relayClient.Start(relayCtx)
 
 	go func() {
@@ -245,6 +215,7 @@ func main() {
 
 	log.Printf("Received signal %s, shutting down gracefully...", sig)
 	relayCancel()
+	handler.Stop()
 	relayClient.Stop()
 	dockerClient.Close()
 	log.Println("DockerTab Agent stopped.")

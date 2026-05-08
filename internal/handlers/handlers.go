@@ -25,6 +25,8 @@ type pairRateLimiter struct {
 	attempts map[string]*pairAttempt
 	max      int
 	window   time.Duration
+	done     chan struct{}
+	stopOnce sync.Once
 }
 
 type pairAttempt struct {
@@ -37,9 +39,14 @@ func newPairRateLimiter() *pairRateLimiter {
 		attempts: make(map[string]*pairAttempt),
 		max:      5,
 		window:   5 * time.Minute,
+		done:     make(chan struct{}),
 	}
 	go rl.cleanup()
 	return rl
+}
+
+func (rl *pairRateLimiter) stop() {
+	rl.stopOnce.Do(func() { close(rl.done) })
 }
 
 func (rl *pairRateLimiter) Allow(ip string) bool {
@@ -58,16 +65,28 @@ func (rl *pairRateLimiter) Allow(ip string) bool {
 func (rl *pairRateLimiter) cleanup() {
 	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
-	for range ticker.C {
-		rl.mu.Lock()
-		now := time.Now()
-		for k, a := range rl.attempts {
-			if now.Sub(a.firstSeen) > rl.window {
-				delete(rl.attempts, k)
+	for {
+		select {
+		case <-ticker.C:
+			rl.mu.Lock()
+			now := time.Now()
+			for k, a := range rl.attempts {
+				if now.Sub(a.firstSeen) > rl.window {
+					delete(rl.attempts, k)
+				}
 			}
+			rl.mu.Unlock()
+		case <-rl.done:
+			return
 		}
-		rl.mu.Unlock()
 	}
+}
+
+type HandlerConfig struct {
+	Version            string
+	TokenStore         *notifications.TokenStore
+	RelayConnected     func() bool
+	RelayRegisterToken func(deviceID, token, environment string, events []string)
 }
 
 type Handler struct {
@@ -75,24 +94,32 @@ type Handler struct {
 	Auth      *auth.Service
 	Config    *config.Config
 	AgentID   string
+	Version   string
 	StartedAt time.Time
 
-	RelayConnected     func() bool // nil when relay is not configured
+	RelayConnected     func() bool
 	TokenStore         *notifications.TokenStore
-	// Set only when relay is configured; forwards an APNs token from a LAN/Tailscale client.
-	RelayRegisterToken func(deviceID, token, environment string)
+	RelayRegisterToken func(deviceID, token, environment string, events []string)
 
 	pairLimiter *pairRateLimiter
 }
 
-func NewHandler(dockerClient docker.DockerClient, authService *auth.Service, cfg *config.Config) *Handler {
+func (h *Handler) Stop() {
+	h.pairLimiter.stop()
+}
+
+func NewHandler(dockerClient docker.DockerClient, authService *auth.Service, cfg *config.Config, hcfg HandlerConfig) *Handler {
 	return &Handler{
-		Docker:      dockerClient,
-		Auth:        authService,
-		Config:      cfg,
-		AgentID:     cfg.AgentID,
-		StartedAt:   time.Now(),
-		pairLimiter: newPairRateLimiter(),
+		Docker:             dockerClient,
+		Auth:               authService,
+		Config:             cfg,
+		AgentID:            cfg.AgentID,
+		StartedAt:          time.Now(),
+		Version:            hcfg.Version,
+		TokenStore:         hcfg.TokenStore,
+		RelayConnected:     hcfg.RelayConnected,
+		RelayRegisterToken: hcfg.RelayRegisterToken,
+		pairLimiter:        newPairRateLimiter(),
 	}
 }
 
@@ -110,7 +137,7 @@ func (h *Handler) Healthz(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":   "healthy",
 		"agent_id": h.AgentID,
-		"version":  "0.1.0",
+		"version":  h.Version,
 		"uptime":   time.Since(h.StartedAt).String(),
 	})
 }
@@ -121,7 +148,11 @@ func (h *Handler) GetHostInfo(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, info)
+	type hostInfoResponse struct {
+		*docker.HostInfo
+		AgentVersion string `json:"agent_version"`
+	}
+	c.JSON(http.StatusOK, hostInfoResponse{HostInfo: info, AgentVersion: h.Version})
 }
 
 type pairRequest struct {
@@ -243,6 +274,11 @@ func (h *Handler) StreamContainerLogs(c *gin.Context) {
 	id := c.Param("id")
 	ctx := c.Request.Context()
 
+	tail := 100
+	if n, err := strconv.Atoi(c.DefaultQuery("lines", "100")); err == nil && n > 0 && n <= 5000 {
+		tail = n
+	}
+
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		log.Printf("websocket upgrade failed: %v", err)
@@ -250,7 +286,7 @@ func (h *Handler) StreamContainerLogs(c *gin.Context) {
 	}
 	defer conn.Close()
 
-	reader, err := h.Docker.StreamLogs(ctx, id, 50)
+	reader, err := h.Docker.StreamLogs(ctx, id, tail)
 	if err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
 		conn.WriteMessage(websocket.TextMessage, errMsg)
@@ -286,7 +322,7 @@ func (h *Handler) StreamContainerLogs(c *gin.Context) {
 			return
 		case line, ok := <-lines:
 			if !ok {
-				return // Stream ended
+				return
 			}
 			if err := conn.WriteMessage(websocket.TextMessage, []byte(line)); err != nil {
 				return
@@ -347,7 +383,6 @@ func isSensitiveEnvKey(key string) bool {
 	return false
 }
 
-// GetContainerEnv redacts values for keys matching sensitive keywords (PASSWORD, SECRET, TOKEN, etc.).
 func (h *Handler) GetContainerEnv(c *gin.Context) {
 	id := c.Param("id")
 	env, err := h.Docker.GetContainerEnv(c.Request.Context(), id)
@@ -371,8 +406,6 @@ func (h *Handler) GetContainerEnv(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"env": pairs, "count": len(pairs)})
 }
 
-// StreamContainerExec attaches an interactive shell via WebSocket.
-// Binary frames carry raw PTY bytes; text frames are JSON resize commands {"rows":N,"cols":N}.
 func (h *Handler) StreamContainerExec(c *gin.Context) {
 	id := c.Param("id")
 	ctx := c.Request.Context()
@@ -393,8 +426,6 @@ func (h *Handler) StreamContainerExec(c *gin.Context) {
 	}
 	defer conn.Close()
 
-	// ExecCreate can succeed even when the binary is absent; the fallback
-	// only triggers if Docker itself reports an error (e.g. container not running).
 	var execID string
 	for _, shell := range []string{"/bin/sh", "/bin/bash", "/bin/ash"} {
 		execID, err = h.Docker.ExecCreate(ctx, id, []string{shell}, rows, cols)
@@ -459,6 +490,7 @@ func (h *Handler) StreamContainerExec(c *gin.Context) {
 	select {
 	case <-done:
 	case <-ctx.Done():
+		// Exec sessions have no separate control channel; writing exit is the only way to terminate the shell.
 		io.WriteString(resp.Conn, "exit\n")
 	}
 }
@@ -475,6 +507,34 @@ func (h *Handler) ListImages(c *gin.Context) {
 	})
 }
 
+func (h *Handler) CheckImageUpdates(c *gin.Context) {
+	imagesParam := c.Query("images")
+	if imagesParam == "" {
+		c.JSON(http.StatusOK, gin.H{"updates": map[string]bool{}})
+		return
+	}
+
+	seen := make(map[string]bool)
+	var unique []string
+	for _, img := range strings.Split(imagesParam, ",") {
+		img = strings.TrimSpace(img)
+		if img != "" && !seen[img] {
+			seen[img] = true
+			unique = append(unique, img)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
+	defer cancel()
+
+	updates, err := h.Docker.CheckImageUpdates(ctx, unique)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"updates": updates})
+}
+
 func (h *Handler) ListVolumes(c *gin.Context) {
 	volumes, err := h.Docker.ListVolumes(c.Request.Context())
 	if err != nil {
@@ -486,4 +546,3 @@ func (h *Handler) ListVolumes(c *gin.Context) {
 		"count":   len(volumes),
 	})
 }
-

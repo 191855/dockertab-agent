@@ -13,6 +13,7 @@ type DeviceRecord struct {
 	Token        string    `json:"token"`
 	Environment  string    `json:"environment"` // "development" | "production"
 	RegisteredAt time.Time `json:"registered_at"`
+	Events       []string  `json:"events,omitempty"` // empty = all events
 }
 
 type TokenStore struct {
@@ -30,12 +31,13 @@ func NewTokenStore(configDir string) *TokenStore {
 	return ts
 }
 
-func (ts *TokenStore) Register(deviceID, token, environment string) {
+func (ts *TokenStore) Register(deviceID, token, environment string, events []string) {
 	ts.mu.Lock()
 	ts.tokens[deviceID] = DeviceRecord{
 		Token:        token,
 		Environment:  environment,
 		RegisteredAt: time.Now(),
+		Events:       events,
 	}
 	ts.mu.Unlock()
 	ts.save()

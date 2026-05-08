@@ -1,4 +1,4 @@
-# DockerTab Agent
+# DockerTab Agent - IOS
 
 Lightweight backend for the DockerTab iOS app. Runs on your server and exposes a REST + WebSocket API for monitoring and managing Docker containers from your phone.
 

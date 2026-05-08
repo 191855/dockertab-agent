@@ -24,15 +24,14 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// validContainerID matches Docker container IDs (hex) and container names.
 var validContainerID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.\-]{0,127}$`)
-
-// containerPathRe extracts the container ID from /api/v1/containers/{id}/...
 var containerPathRe = regexp.MustCompile(`^/api/v1/containers/([^/]+)/`)
 
 type streamEntry struct {
 	clientID string
 	cancel   context.CancelFunc
+	stdin    io.Writer
+	execID   string
 }
 
 type Client struct {
@@ -41,18 +40,14 @@ type Client struct {
 	docker      docker.DockerClient
 	router      http.Handler
 	agentID     string
-	relayJWT    string // Internal JWT for authenticating relay-forwarded requests
+	relayJWT    string
 
 	conn   *websocket.Conn
 	connMu sync.Mutex
 	send   chan []byte
 
-	streams      map[string]streamEntry // request_id → {clientID, cancel}
-	streamsMu    sync.Mutex
-	stdinWriters map[string]io.Writer  // request_id → exec stdin
-	stdinMu      sync.Mutex
-	execIDs      map[string]string     // request_id → docker execID (for resize)
-	execIDsMu    sync.Mutex
+	streams   map[string]*streamEntry
+	streamsMu sync.Mutex
 
 	backoffAttempt int
 	done           chan struct{}
@@ -66,17 +61,15 @@ func NewClient(cfg *config.Config, authService *auth.Service, dockerClient docke
 	}
 
 	return &Client{
-		cfg:          cfg,
-		authService:  authService,
-		docker:       dockerClient,
-		router:       router,
-		agentID:      agentID,
-		relayJWT:     relayJWT,
-		send:         make(chan []byte, 256),
-		streams:      make(map[string]streamEntry),
-		stdinWriters: make(map[string]io.Writer),
-		execIDs:      make(map[string]string),
-		done:         make(chan struct{}),
+		cfg:         cfg,
+		authService: authService,
+		docker:      dockerClient,
+		router:      router,
+		agentID:     agentID,
+		relayJWT:    relayJWT,
+		send:        make(chan []byte, 256),
+		streams:     make(map[string]*streamEntry),
+		done:        make(chan struct{}),
 	}
 }
 
@@ -118,14 +111,14 @@ func (c *Client) IsConnected() bool {
 	return c.conn != nil
 }
 
-// RegisterDeviceToken forwards a token to the relay for LAN/Tailscale clients that bypass the relay WebSocket.
-func (c *Client) RegisterDeviceToken(deviceID, token, environment string) {
+func (c *Client) RegisterDeviceToken(deviceID, token, environment string, events []string) {
 	c.sendEnvelope(Envelope{
 		Type: TypeRegisterAPNs,
 		Payload: MustMarshal(RegisterAPNsPayload{
 			DeviceID:    deviceID,
 			DeviceToken: token,
 			Environment: environment,
+			Events:      events,
 		}),
 	})
 }
@@ -145,7 +138,7 @@ func (c *Client) SendNotification(containerID, containerName, action string) {
 func (c *Client) backoff(ctx context.Context) bool {
 	c.backoffAttempt++
 	delay := time.Duration(math.Min(float64(time.Second)*math.Pow(2, float64(c.backoffAttempt)), float64(60*time.Second)))
-	jitter := time.Duration(float64(delay) * (0.8 + 0.4*rand.Float64())) // +/- 20%
+	jitter := time.Duration(float64(delay) * (0.8 + 0.4*rand.Float64()))
 
 	log.Printf("[relay] reconnecting in %s...", jitter.Round(time.Millisecond))
 
@@ -272,7 +265,6 @@ func (c *Client) writeLoop(ctx context.Context, conn *websocket.Conn) {
 		case msg := <-c.send:
 			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
 				log.Printf("[relay] write failed: %v", err)
-				// Re-enqueue for the next connection attempt.
 				select {
 				case c.send <- msg:
 				default:
@@ -392,9 +384,7 @@ func (c *Client) handleRequest(ctx context.Context, env Envelope) {
 	for k, v := range payload.Headers {
 		httpReq.Header.Set(k, v)
 	}
-
-	// The client already authenticated at the relay; inject the internal JWT
-	// so the request passes the agent's JWT middleware.
+	// Relay-forwarded requests skip the iOS↔agent JWT; inject the internal one instead.
 	if c.relayJWT != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+c.relayJWT)
 	}
@@ -428,8 +418,9 @@ func (c *Client) handleStreamOpen(ctx context.Context, env Envelope) {
 	}
 
 	streamCtx, cancel := context.WithCancel(ctx)
+	entry := &streamEntry{clientID: env.ClientID, cancel: cancel}
 	c.streamsMu.Lock()
-	c.streams[env.RequestID] = streamEntry{clientID: env.ClientID, cancel: cancel}
+	c.streams[env.RequestID] = entry
 	c.streamsMu.Unlock()
 
 	defer func() {
@@ -444,7 +435,6 @@ func (c *Client) handleStreamOpen(ctx context.Context, env Envelope) {
 		})
 	}()
 
-	// e.g. /api/v1/containers/{id}/logs/stream, /stats/stream, /exec
 	matches := containerPathRe.FindStringSubmatch(payload.Path)
 	if len(matches) < 2 {
 		return
@@ -455,11 +445,16 @@ func (c *Client) handleStreamOpen(ctx context.Context, env Envelope) {
 		return
 	}
 
-	if strings.Contains(payload.Path, "/logs/stream") {
+	pathOnly := payload.Path
+	if idx := strings.Index(payload.Path, "?"); idx >= 0 {
+		pathOnly = payload.Path[:idx]
+	}
+
+	if strings.HasSuffix(pathOnly, "/logs/stream") {
 		c.streamLogs(streamCtx, env, containerID)
-	} else if strings.Contains(payload.Path, "/stats/stream") {
+	} else if strings.HasSuffix(pathOnly, "/stats/stream") {
 		c.streamStats(streamCtx, env, containerID)
-	} else if strings.Contains(payload.Path, "/exec") {
+	} else if strings.HasSuffix(pathOnly, "/exec") {
 		rows, cols := 24, 80
 		if idx := strings.Index(payload.Path, "?"); idx >= 0 {
 			for _, kv := range strings.Split(payload.Path[idx+1:], "&") {
@@ -532,8 +527,6 @@ func (c *Client) streamStats(ctx context.Context, env Envelope, containerID stri
 	}
 }
 
-// streamExec runs an interactive shell; /bin/sh is tried first, bash and ash are fallbacks.
-// PTY output is sent as base64-encoded stream_data frames.
 func (c *Client) streamExec(ctx context.Context, env Envelope, containerID string, rows, cols int) {
 	var execID string
 	var err error
@@ -555,20 +548,12 @@ func (c *Client) streamExec(ctx context.Context, env Envelope, containerID strin
 	}
 	defer resp.Close()
 
-	c.stdinMu.Lock()
-	c.stdinWriters[env.RequestID] = resp.Conn
-	c.stdinMu.Unlock()
-	c.execIDsMu.Lock()
-	c.execIDs[env.RequestID] = execID
-	c.execIDsMu.Unlock()
-	defer func() {
-		c.stdinMu.Lock()
-		delete(c.stdinWriters, env.RequestID)
-		c.stdinMu.Unlock()
-		c.execIDsMu.Lock()
-		delete(c.execIDs, env.RequestID)
-		c.execIDsMu.Unlock()
-	}()
+	c.streamsMu.Lock()
+	if e, ok := c.streams[env.RequestID]; ok {
+		e.stdin = resp.Conn
+		e.execID = execID
+	}
+	c.streamsMu.Unlock()
 
 	buf := make([]byte, 4096)
 	for {
@@ -602,13 +587,13 @@ func (c *Client) handleStreamInput(env Envelope) {
 	if err != nil {
 		return
 	}
-	c.stdinMu.Lock()
-	w, ok := c.stdinWriters[env.RequestID]
-	c.stdinMu.Unlock()
-	if !ok {
+	c.streamsMu.Lock()
+	e, ok := c.streams[env.RequestID]
+	c.streamsMu.Unlock()
+	if !ok || e.stdin == nil {
 		return
 	}
-	_, _ = w.Write(decoded)
+	_, _ = e.stdin.Write(decoded)
 }
 
 func (c *Client) handleStreamResize(env Envelope) {
@@ -616,13 +601,13 @@ func (c *Client) handleStreamResize(env Envelope) {
 	if err := json.Unmarshal(env.Payload, &payload); err != nil || payload.Rows <= 0 || payload.Cols <= 0 {
 		return
 	}
-	c.execIDsMu.Lock()
-	execID, ok := c.execIDs[env.RequestID]
-	c.execIDsMu.Unlock()
-	if !ok {
+	c.streamsMu.Lock()
+	e, ok := c.streams[env.RequestID]
+	c.streamsMu.Unlock()
+	if !ok || e.execID == "" {
 		return
 	}
-	_ = c.docker.ExecResize(context.Background(), execID, payload.Rows, payload.Cols)
+	_ = c.docker.ExecResize(context.Background(), e.execID, payload.Rows, payload.Cols)
 }
 
 func (c *Client) handleStreamClose(env Envelope) {

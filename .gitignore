@@ -14,3 +14,6 @@ device-tokens.json
 .vscode/
 *.swp
 
+# Test files (local only)
+*_test.go
+

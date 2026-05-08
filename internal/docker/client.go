@@ -6,9 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
+	"github.com/distribution/reference"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
@@ -17,6 +21,7 @@ import (
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 type ContainerEvent struct {
@@ -39,6 +44,7 @@ type DockerClient interface {
 	GetHostInfo(ctx context.Context) (*HostInfo, error)
 	ListImages(ctx context.Context) ([]ImageSummary, error)
 	ListVolumes(ctx context.Context) ([]VolumeSummary, error)
+	CheckImageUpdates(ctx context.Context, images []string) (map[string]bool, error)
 
 	StartContainer(ctx context.Context, id string) error
 	StopContainer(ctx context.Context, id string) error
@@ -69,6 +75,15 @@ type VolumeSummary struct {
 	Labels     map[string]string `json:"labels,omitempty"`
 }
 
+const bytesPerMB = 1024 * 1024
+
+func trimContainerName(s string) string {
+	if len(s) > 0 && s[0] == '/' {
+		return s[1:]
+	}
+	return s
+}
+
 var _ DockerClient = (*Client)(nil)
 
 type Client struct {
@@ -88,15 +103,15 @@ type ContainerSummary struct {
 }
 
 type ContainerStats struct {
-	CPUUsage        float64 `json:"cpu_usage"`
-	MemoryUsage     float64 `json:"memory_usage"`
-	MemoryLimit     float64 `json:"memory_limit"`
-	NetInput        float64 `json:"net_input"`
-	NetOutput       float64 `json:"net_output"`
-	BlockRead       float64 `json:"block_read"`        // MB read from disk
-	BlockWrite      float64 `json:"block_write"`       // MB written to disk
-	PIDs            uint64  `json:"pids"`              // Number of processes
-	CPUThrottlePct  float64 `json:"cpu_throttle_pct"` // % of time CPU was throttled
+	CPUUsage       float64 `json:"cpu_usage"`
+	MemoryUsage    float64 `json:"memory_usage"`
+	MemoryLimit    float64 `json:"memory_limit"`
+	NetInput       float64 `json:"net_input"`
+	NetOutput      float64 `json:"net_output"`
+	BlockRead      float64 `json:"block_read"`
+	BlockWrite     float64 `json:"block_write"`
+	PIDs           uint64  `json:"pids"`
+	CPUThrottlePct float64 `json:"cpu_throttle_pct"`
 }
 
 type PortBinding struct {
@@ -153,10 +168,7 @@ func (c *Client) ListContainers(ctx context.Context) ([]ContainerSummary, error)
 	for _, ctr := range containers {
 		name := ""
 		if len(ctr.Names) > 0 {
-			name = ctr.Names[0]
-			if len(name) > 0 && name[0] == '/' {
-				name = name[1:]
-			}
+			name = trimContainerName(ctr.Names[0])
 		}
 
 		ports := make([]PortBinding, 0)
@@ -189,10 +201,7 @@ func (c *Client) GetContainer(ctx context.Context, id string) (*ContainerSummary
 		return nil, fmt.Errorf("container not found: %w", err)
 	}
 
-	name := inspect.Name
-	if len(name) > 0 && name[0] == '/' {
-		name = name[1:]
-	}
+	name := trimContainerName(inspect.Name)
 
 	ports := make([]PortBinding, 0)
 	for containerPort, bindings := range inspect.NetworkSettings.Ports {
@@ -205,17 +214,18 @@ func (c *Client) GetContainer(ctx context.Context, id string) (*ContainerSummary
 		}
 	}
 
+	var createdUnix int64
+	if created, err := time.Parse(time.RFC3339Nano, inspect.Created); err == nil {
+		createdUnix = created.Unix()
+	}
 	return &ContainerSummary{
-		ID:     inspect.ID[:12],
-		Name:   name,
-		Image:  inspect.Config.Image,
-		State:  inspect.State.Status,
-		Status: inspect.State.Status,
-		Created: func() int64 {
-			t, _ := time.Parse(time.RFC3339Nano, inspect.Created)
-			return t.UnixNano()
-		}(),
-		Ports: ports,
+		ID:      inspect.ID[:12],
+		Name:    name,
+		Image:   inspect.Config.Image,
+		State:   inspect.State.Status,
+		Status:  inspect.State.Status,
+		Created: createdUnix,
+		Ports:   ports,
 	}, nil
 }
 
@@ -313,7 +323,7 @@ func (c *Client) GetHostInfo(ctx context.Context) (*HostInfo, error) {
 		OS:            info.OperatingSystem,
 		Architecture:  info.Architecture,
 		CPUs:          info.NCPU,
-		MemoryTotal:   float64(info.MemTotal) / 1024 / 1024, // MB
+		MemoryTotal:   float64(info.MemTotal) / bytesPerMB,
 		DockerVersion: version.Version,
 		Containers:    info.Containers,
 		Running:       info.ContainersRunning,
@@ -344,7 +354,7 @@ func (c *Client) ListImages(ctx context.Context) ([]ImageSummary, error) {
 		summaries = append(summaries, ImageSummary{
 			ID:      img.ID[7:19], // strip "sha256:", take 12 chars
 			Tags:    tags,
-			SizeMB:  float64(img.Size) / 1024 / 1024,
+			SizeMB:  float64(img.Size) / bytesPerMB,
 			Created: img.Created,
 		})
 	}
@@ -449,6 +459,213 @@ func (c *Client) Events(ctx context.Context) (<-chan ContainerEvent, <-chan erro
 	return outEvents, outErrs
 }
 
+func (c *Client) CheckImageUpdates(ctx context.Context, images []string) (map[string]bool, error) {
+	result := make(map[string]bool)
+	for _, img := range images {
+		if img == "" || strings.HasPrefix(img, "<none>") || strings.HasPrefix(img, "sha256:") {
+			continue
+		}
+		update, err := c.isImageUpdateAvailable(ctx, img)
+		if err != nil {
+			log.Printf("[image-updates] %s: skipped (%v)", img, err)
+			continue
+		}
+		log.Printf("[image-updates] %s: update=%v", img, update)
+		result[img] = update
+	}
+	return result, nil
+}
+
+func (c *Client) isImageUpdateAvailable(ctx context.Context, imageRef string) (bool, error) {
+	inspect, _, err := c.cli.ImageInspectWithRaw(ctx, imageRef)
+	if err != nil {
+		return false, err
+	}
+	if len(inspect.RepoDigests) == 0 {
+		return false, nil
+	}
+	dist, err := c.cli.DistributionInspect(ctx, imageRef, "")
+	if err != nil {
+		return false, err
+	}
+	remoteDigest := string(dist.Descriptor.Digest)
+
+	for _, d := range inspect.RepoDigests {
+		if strings.Contains(d, remoteDigest) {
+			return false, nil
+		}
+	}
+
+	if isManifestListType(string(dist.Descriptor.MediaType)) {
+		platformDigest, err := fetchPlatformDigest(ctx, imageRef, inspect.Os, inspect.Architecture)
+		if err == nil && platformDigest != "" {
+			for _, d := range inspect.RepoDigests {
+				if strings.Contains(d, platformDigest) {
+					return false, nil
+				}
+			}
+		}
+	}
+
+	return true, nil
+}
+
+func isManifestListType(mediaType string) bool {
+	return mediaType == "application/vnd.docker.distribution.manifest.list.v2+json" ||
+		mediaType == "application/vnd.oci.image.index.v1+json"
+}
+
+func fetchPlatformDigest(ctx context.Context, imageRef, osName, arch string) (string, error) {
+	named, err := reference.ParseNormalizedNamed(imageRef)
+	if err != nil {
+		return "", err
+	}
+	named = reference.TagNameOnly(named)
+	registry := reference.Domain(named)
+	repo := reference.Path(named)
+	if registry == "docker.io" {
+		registry = "registry-1.docker.io"
+	}
+
+	var ref string
+	if tagged, ok := named.(reference.Tagged); ok {
+		ref = tagged.Tag()
+	} else if digested, ok := named.(reference.Digested); ok {
+		ref = string(digested.Digest())
+	} else {
+		return "", fmt.Errorf("no tag or digest in image ref")
+	}
+
+	accept := "application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json"
+	manifestURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s", registry, repo, ref)
+	body, err := registryGet(ctx, manifestURL, accept)
+	if err != nil {
+		return "", err
+	}
+
+	var idx ocispec.Index
+	if err := json.Unmarshal(body, &idx); err != nil {
+		return "", err
+	}
+
+	for _, m := range idx.Manifests {
+		if m.Platform == nil {
+			continue
+		}
+		if m.Platform.OS == osName && m.Platform.Architecture == arch {
+			return string(m.Digest), nil
+		}
+	}
+	return "", nil
+}
+
+func registryGet(ctx context.Context, rawURL, accept string) ([]byte, error) {
+	hc := &http.Client{Timeout: 10 * time.Second}
+
+	do := func(token string) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", accept)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		return hc.Do(req)
+	}
+
+	resp, err := do("")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		token, err := exchangeRegistryToken(ctx, hc, resp.Header.Get("Www-Authenticate"))
+		if err != nil {
+			return nil, err
+		}
+		resp2, err := do(token)
+		if err != nil {
+			return nil, err
+		}
+		defer resp2.Body.Close()
+		if resp2.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("registry %s", resp2.Status)
+		}
+		return io.ReadAll(io.LimitReader(resp2.Body, 1<<20))
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("registry %s", resp.Status)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+}
+
+func exchangeRegistryToken(ctx context.Context, hc *http.Client, challenge string) (string, error) {
+	const bearer = "Bearer "
+	if !strings.HasPrefix(challenge, bearer) {
+		return "", fmt.Errorf("unsupported auth challenge")
+	}
+	params := parseKeyValues(challenge[len(bearer):])
+	realm := params["realm"]
+	if realm == "" {
+		return "", fmt.Errorf("missing realm in auth challenge")
+	}
+
+	q := url.Values{}
+	if s := params["service"]; s != "" {
+		q.Set("service", s)
+	}
+	if s := params["scope"]; s != "" {
+		q.Set("scope", s)
+	}
+	tokenURL := realm
+	if len(q) > 0 {
+		tokenURL += "?" + q.Encode()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tokenURL, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var tr struct {
+		Token       string `json:"token"`
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
+		return "", err
+	}
+	if tr.Token != "" {
+		return tr.Token, nil
+	}
+	if tr.AccessToken != "" {
+		return tr.AccessToken, nil
+	}
+	return "", fmt.Errorf("no token in response")
+}
+
+func parseKeyValues(s string) map[string]string {
+	out := make(map[string]string)
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		idx := strings.IndexByte(part, '=')
+		if idx < 0 {
+			continue
+		}
+		key := strings.TrimSpace(part[:idx])
+		val := strings.Trim(strings.TrimSpace(part[idx+1:]), `"`)
+		out[key] = val
+	}
+	return out
+}
+
 func parseStats(stats *types.StatsJSON) *ContainerStats {
 	cpuDelta := float64(stats.CPUStats.CPUUsage.TotalUsage - stats.PreCPUStats.CPUUsage.TotalUsage)
 	systemDelta := float64(stats.CPUStats.SystemUsage - stats.PreCPUStats.SystemUsage)
@@ -462,8 +679,8 @@ func parseStats(stats *types.StatsJSON) *ContainerStats {
 		cpuPercent = (cpuDelta / systemDelta) * cpuCount * 100.0
 	}
 
-	memUsage := float64(stats.MemoryStats.Usage-stats.MemoryStats.Stats["cache"]) / 1024 / 1024
-	memLimit := float64(stats.MemoryStats.Limit) / 1024 / 1024
+	memUsage := float64(stats.MemoryStats.Usage-stats.MemoryStats.Stats["cache"]) / bytesPerMB
+	memLimit := float64(stats.MemoryStats.Limit) / bytesPerMB
 
 	var netIn, netOut float64
 	for _, v := range stats.Networks {
@@ -491,10 +708,10 @@ func parseStats(stats *types.StatsJSON) *ContainerStats {
 		CPUUsage:       cpuPercent,
 		MemoryUsage:    memUsage,
 		MemoryLimit:    memLimit,
-		NetInput:       netIn / 1024 / 1024,   // MB
-		NetOutput:      netOut / 1024 / 1024,  // MB
-		BlockRead:      blockRead / 1024 / 1024,
-		BlockWrite:     blockWrite / 1024 / 1024,
+		NetInput:       netIn / bytesPerMB,
+		NetOutput:      netOut / bytesPerMB,
+		BlockRead:      blockRead / bytesPerMB,
+		BlockWrite:     blockWrite / bytesPerMB,
 		PIDs:           stats.PidsStats.Current,
 		CPUThrottlePct: cpuThrottlePct,
 	}
