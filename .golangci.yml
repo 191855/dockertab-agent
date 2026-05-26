@@ -1,0 +1,21 @@
+version: "2"
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters:
+  default: standard
+  disable:
+    # Existing code has many intentionally ignored cleanup/write errors.
+    # Re-enable after a dedicated errcheck cleanup pass.
+    - errcheck
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+    rules:
+      - linters:
+          - staticcheck
+        text: "SA1019: types\\.StatsJSON is deprecated"
