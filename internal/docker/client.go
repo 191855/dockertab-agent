@@ -57,11 +57,6 @@ type DockerClient interface {
 	ExecResize(ctx context.Context, execID string, rows, cols int) error
 
 	Events(ctx context.Context) (<-chan ContainerEvent, <-chan error)
-
-	ListComposeProjects(ctx context.Context) ([]ComposeProject, error)
-	StartComposeService(ctx context.Context, project, service string) error
-	StopComposeService(ctx context.Context, project, service string) error
-	RestartComposeService(ctx context.Context, project, service string) error
 }
 
 type ImageSummary struct {
