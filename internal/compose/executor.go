@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-// Executor is the interface for docker compose CLI lifecycle operations.
 type Executor interface {
 	Up(ctx context.Context, name string) (string, error)
 	Down(ctx context.Context, name string) (string, error)
@@ -16,8 +15,7 @@ type Executor interface {
 	Logs(ctx context.Context, name string, lines int) (string, error)
 }
 
-// CLIExecutor runs docker compose CLI commands.
-// start/stop/restart use the Docker SDK (via DockerClient) rather than CLI for speed and reliability.
+// start/stop/restart use the Docker SDK rather than CLI for speed and reliability.
 type CLIExecutor struct {
 	store Storer
 }

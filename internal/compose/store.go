@@ -9,7 +9,6 @@ import (
 
 var validProjectName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
-// Storer is the interface for compose file persistence.
 type Storer interface {
 	Exists(name string) bool
 	Create(name, content string) error
@@ -20,7 +19,6 @@ type Storer interface {
 	FilePath(name string) string
 }
 
-// Store persists compose files under <configDir>/compose/<name>/docker-compose.yml.
 // Project names are validated to [a-zA-Z0-9_-]{1,64} to prevent path traversal.
 type Store struct {
 	baseDir string

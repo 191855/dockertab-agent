@@ -133,6 +133,26 @@ If you'd rather skip the volume, just set `DOCKERTAB_API_KEY` and `DOCKERTAB_JWT
 | `POST` | `/api/v1/notifications/register` | Register APNs device token |
 | `DELETE` | `/api/v1/notifications/unregister` | Unregister APNs device token |
 
+#### Compose Stacks (app-managed)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/compose/stacks` | List all stacks (managed + discovered) |
+| `POST` | `/api/v1/compose/stacks` | Create and optionally deploy a new stack |
+| `GET` | `/api/v1/compose/stacks/:name` | Get a single stack |
+| `DELETE` | `/api/v1/compose/stacks/:name` | Delete a managed stack |
+| `GET` | `/api/v1/compose/stacks/:name/file` | Get the compose file (read-only for discovered stacks) |
+| `PUT` | `/api/v1/compose/stacks/:name/file` | Update the compose file |
+| `POST` | `/api/v1/compose/stacks/:name/up` | `docker compose up -d` |
+| `POST` | `/api/v1/compose/stacks/:name/down` | `docker compose down` |
+| `POST` | `/api/v1/compose/stacks/:name/start` | Start stopped containers |
+| `POST` | `/api/v1/compose/stacks/:name/stop` | Stop running containers |
+| `POST` | `/api/v1/compose/stacks/:name/restart` | Restart containers |
+| `POST` | `/api/v1/compose/stacks/:name/pull` | Pull latest images |
+| `GET` | `/api/v1/compose/stacks/:name/logs?lines=100` | Last N log lines (max 5000) |
+
+> **Note:** Up, Down, Pull, and Logs require the `docker` CLI to be available in the agent container — it is included from v1.3 onwards.
+
 ---
 
 ## Push Notifications & Remote Access
