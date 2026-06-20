@@ -126,6 +126,15 @@ func main() {
 
 		api.POST("/notifications/register", handler.RegisterDeviceToken)
 		api.DELETE("/notifications/unregister", handler.UnregisterDeviceToken)
+
+		api.GET("/compose", handler.ListComposeProjects)
+		api.GET("/compose/:project", handler.GetComposeProject)
+		api.POST("/compose/:project/start", handler.ComposeProjectStart)
+		api.POST("/compose/:project/stop", handler.ComposeProjectStop)
+		api.POST("/compose/:project/restart", handler.ComposeProjectRestart)
+		api.POST("/compose/:project/services/:service/start", handler.ComposeServiceStart)
+		api.POST("/compose/:project/services/:service/stop", handler.ComposeServiceStop)
+		api.POST("/compose/:project/services/:service/restart", handler.ComposeServiceRestart)
 	}
 
 	debouncer := notifications.NewDebouncer(relaySender{c: relayClient})
