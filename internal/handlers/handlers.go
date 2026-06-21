@@ -14,6 +14,7 @@ import (
 
 	"github.com/dockertab/agent/config"
 	"github.com/dockertab/agent/internal/auth"
+	"github.com/dockertab/agent/internal/compose"
 	"github.com/dockertab/agent/internal/docker"
 	"github.com/dockertab/agent/internal/notifications"
 	"github.com/gin-gonic/gin"
@@ -87,6 +88,8 @@ type HandlerConfig struct {
 	TokenStore         *notifications.TokenStore
 	RelayConnected     func() bool
 	RelayRegisterToken func(deviceID, token, environment string, events []string)
+	ComposeStore       compose.Storer
+	ComposeExecutor    compose.Executor
 }
 
 type Handler struct {
@@ -100,6 +103,9 @@ type Handler struct {
 	RelayConnected     func() bool
 	TokenStore         *notifications.TokenStore
 	RelayRegisterToken func(deviceID, token, environment string, events []string)
+
+	ComposeStore    compose.Storer
+	ComposeExecutor compose.Executor
 
 	pairLimiter *pairRateLimiter
 }
@@ -119,6 +125,8 @@ func NewHandler(dockerClient docker.DockerClient, authService *auth.Service, cfg
 		TokenStore:         hcfg.TokenStore,
 		RelayConnected:     hcfg.RelayConnected,
 		RelayRegisterToken: hcfg.RelayRegisterToken,
+		ComposeStore:       hcfg.ComposeStore,
+		ComposeExecutor:    hcfg.ComposeExecutor,
 		pairLimiter:        newPairRateLimiter(),
 	}
 }
