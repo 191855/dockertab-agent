@@ -13,6 +13,7 @@ import (
 
 	"github.com/dockertab/agent/config"
 	"github.com/dockertab/agent/internal/auth"
+	"github.com/dockertab/agent/internal/compose"
 	"github.com/dockertab/agent/internal/docker"
 	"github.com/dockertab/agent/internal/handlers"
 	"github.com/dockertab/agent/internal/middleware"
@@ -68,6 +69,8 @@ func main() {
 		configDir = filepath.Dir(v)
 	}
 	tokenStore := notifications.NewTokenStore(configDir)
+	composeStore := compose.NewStore(configDir)
+	composeExecutor := compose.NewCLIExecutor(composeStore)
 
 	var apnsClient *notifications.APNsClient
 	if cfg.APNsConfigured() {
@@ -96,6 +99,8 @@ func main() {
 		TokenStore:         tokenStore,
 		RelayConnected:     relayClient.IsConnected,
 		RelayRegisterToken: relayClient.RegisterDeviceToken,
+		ComposeStore:       composeStore,
+		ComposeExecutor:    composeExecutor,
 	})
 
 	router.GET("/healthz", handler.Healthz)
@@ -135,6 +140,23 @@ func main() {
 		api.POST("/compose/:project/services/:service/start", handler.ComposeServiceStart)
 		api.POST("/compose/:project/services/:service/stop", handler.ComposeServiceStop)
 		api.POST("/compose/:project/services/:service/restart", handler.ComposeServiceRestart)
+
+		stacks := api.Group("/compose/stacks")
+		{
+			stacks.GET("", handler.ListComposeStacks)
+			stacks.POST("", handler.CreateComposeStack)
+			stacks.GET("/:name", handler.GetComposeStack)
+			stacks.DELETE("/:name", handler.DeleteComposeStack)
+			stacks.GET("/:name/file", handler.GetComposeStackFile)
+			stacks.PUT("/:name/file", handler.UpdateComposeStackFile)
+			stacks.POST("/:name/up", handler.ComposeStackUp)
+			stacks.POST("/:name/down", handler.ComposeStackDown)
+			stacks.POST("/:name/start", handler.ComposeStackStart)
+			stacks.POST("/:name/stop", handler.ComposeStackStop)
+			stacks.POST("/:name/restart", handler.ComposeStackRestart)
+			stacks.POST("/:name/pull", handler.ComposeStackPull)
+			stacks.GET("/:name/logs", handler.GetComposeStackLogs)
+		}
 	}
 
 	debouncer := notifications.NewDebouncer(relaySender{c: relayClient})

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 
@@ -66,11 +67,8 @@ func (h *Handler) composeServiceAction(c *gin.Context, action string) {
 	c.JSON(http.StatusOK, gin.H{"message": "service " + action, "project": project, "service": service})
 }
 
-// ── Compose stacks API (premium-gated on the iOS side) ──────────────────────
+// ── Compose stacks API ───────────────────────────────────────────────────────
 
-// composeStack is the unified view of a compose project, merging agent-managed
-// and host-discovered stacks. The iOS client uses managed=true to decide
-// whether to offer file editing / re-deploy.
 type composeStack struct {
 	Name         string                 `json:"name"`
 	Managed      bool                   `json:"managed"`
@@ -78,7 +76,6 @@ type composeStack struct {
 	Services     []docker.ComposeService `json:"services"`
 	RunningCount int                    `json:"running_count"`
 	TotalCount   int                    `json:"total_count"`
-	// ConfigFile is the host-side compose file path for discovered stacks only.
 	ConfigFile string `json:"config_file,omitempty"`
 }
 
@@ -90,7 +87,6 @@ func (h *Handler) requireCompose(c *gin.Context) bool {
 	return true
 }
 
-// buildStackList merges managed store entries and Docker-discovered projects.
 func (h *Handler) buildStackList(c *gin.Context) ([]composeStack, error) {
 	dockerProjects, err := h.Docker.ListComposeProjects(c.Request.Context())
 	if err != nil {
@@ -232,16 +228,35 @@ func (h *Handler) GetComposeStackFile(c *gin.Context) {
 		return
 	}
 	name := c.Param("name")
-	content, err := h.ComposeStore.Read(name)
-	if err != nil {
-		if h.ComposeStore.Exists(name) {
+
+	if h.ComposeStore.Exists(name) {
+		content, err := h.ComposeStore.Read(name)
+		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		} else {
-			c.JSON(http.StatusNotFound, gin.H{"error": "stack not found or not managed by agent"})
+			return
 		}
+		c.JSON(http.StatusOK, gin.H{"name": name, "content": content, "readonly": false})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"name": name, "content": content})
+
+	stacks, err := h.buildStackList(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	for _, s := range stacks {
+		if s.Name == name && s.ConfigFile != "" {
+			data, err := os.ReadFile(s.ConfigFile)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read compose file: " + err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"name": name, "content": string(data), "readonly": true})
+			return
+		}
+	}
+
+	c.JSON(http.StatusNotFound, gin.H{"error": "stack not found or compose file not available"})
 }
 
 type updateFileRequest struct {

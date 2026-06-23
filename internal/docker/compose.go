@@ -16,11 +16,12 @@ const (
 )
 
 type ComposeService struct {
-	Name         string           `json:"name"`
+	Name         string             `json:"name"`
+	Image        string             `json:"image,omitempty"`
 	Containers   []ContainerSummary `json:"containers"`
-	State        string           `json:"state"` // "running" | "partial" | "stopped"
-	RunningCount int              `json:"running_count"`
-	TotalCount   int              `json:"total_count"`
+	State        string             `json:"state"` // "running" | "partial" | "stopped"
+	RunningCount int                `json:"running_count"`
+	TotalCount   int                `json:"total_count"`
 }
 
 type ComposeProject struct {
@@ -42,7 +43,6 @@ func composeState(running, total int) string {
 	return "partial"
 }
 
-// groupComposeProjects aggregates labelled containers into compose projects and services.
 func groupComposeProjects(containers []ContainerSummary) []ComposeProject {
 	type serviceKey struct{ project, service string }
 	serviceContainers := make(map[serviceKey][]ContainerSummary)
@@ -69,8 +69,13 @@ func groupComposeProjects(containers []ContainerSummary) []ComposeProject {
 				running++
 			}
 		}
+		image := ""
+		if len(ctrs) > 0 {
+			image = ctrs[0].Image
+		}
 		svc := ComposeService{
 			Name:         key.service,
+			Image:        image,
 			Containers:   ctrs,
 			State:        composeState(running, len(ctrs)),
 			RunningCount: running,
