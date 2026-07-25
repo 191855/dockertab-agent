@@ -155,6 +155,18 @@ If you'd rather skip the volume, just set `DOCKERTAB_API_KEY` and `DOCKERTAB_JWT
 
 ---
 
+## Compose Stack Files
+
+Stacks deployed through the app are stored on the agent host at:
+
+```
+~/.config/dockertab/compose/<stack-name>/docker-compose.yml
+```
+
+This directory is persisted via the `dockertab-config` volume. Stacks started outside the app (discovered from running containers) are read-only — their compose files are not managed by the agent.
+
+---
+
 ## Push Notifications & Remote Access
 
 Push notifications and remote access (outside your home network) are **DockerTab Premium** features, powered by the DockerTab relay — operated by DockerTab.
