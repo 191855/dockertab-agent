@@ -7,7 +7,7 @@ import (
 	"regexp"
 )
 
-var validProjectName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+var validProjectName = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
 
 type Storer interface {
 	Exists(name string) bool
@@ -19,7 +19,6 @@ type Storer interface {
 	FilePath(name string) string
 }
 
-// Project names are validated to [a-zA-Z0-9_-]{1,64} to prevent path traversal.
 type Store struct {
 	baseDir string
 }
@@ -32,7 +31,7 @@ func NewStore(configDir string) *Store {
 
 func ValidateName(name string) error {
 	if !validProjectName.MatchString(name) {
-		return fmt.Errorf("invalid stack name %q: must match [a-zA-Z0-9_-]{1,64}", name)
+		return fmt.Errorf("invalid stack name %q: must be lowercase letters, digits, - or _ (max 64 chars)", name)
 	}
 	return nil
 }

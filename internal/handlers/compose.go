@@ -216,6 +216,7 @@ func (h *Handler) DeleteComposeStack(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "stack not found or not managed by agent"})
 		return
 	}
+	h.ComposeExecutor.Down(c.Request.Context(), name)
 	if err := h.ComposeStore.Delete(name); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -248,7 +249,7 @@ func (h *Handler) GetComposeStackFile(c *gin.Context) {
 		if s.Name == name && s.ConfigFile != "" {
 			data, err := os.ReadFile(s.ConfigFile)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read compose file: " + err.Error()})
+				c.JSON(http.StatusNotFound, gin.H{"error": "compose file not accessible by agent"})
 				return
 			}
 			c.JSON(http.StatusOK, gin.H{"name": name, "content": string(data), "readonly": true})
