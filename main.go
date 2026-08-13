@@ -186,7 +186,7 @@ func main() {
 	}()
 
 	if apnsClient != nil {
-		watcher := notifications.NewWatcher(dockerClient, tokenStore, apnsClient, cfg.AgentID, cfg.Name, cfg.APNsSandbox)
+		watcher := notifications.NewWatcher(dockerClient, tokenStore, apnsClient, cfg.AgentID, cfg.Name, cfg.APNsSandbox, relayClient.IsConnected)
 		go func() {
 			if err := watcher.Start(relayCtx); err != nil && relayCtx.Err() == nil {
 				log.Printf("Docker events watcher error: %v", err)
