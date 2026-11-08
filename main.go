@@ -109,6 +109,8 @@ func main() {
 	api := router.Group("/api/v1")
 	api.Use(middleware.JWTAuth(authService))
 	{
+		api.POST("/refresh", handler.Refresh)
+
 		api.GET("/host", handler.GetHostInfo)
 
 		api.GET("/containers", handler.ListContainers)
