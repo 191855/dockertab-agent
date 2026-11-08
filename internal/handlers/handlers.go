@@ -200,6 +200,29 @@ func (h *Handler) Pair(c *gin.Context) {
 	})
 }
 
+// Refresh mints a new token for the already-authenticated caller, extending
+// its validity without requiring the full pairing flow again. It sits behind
+// JWTAuth like every other /api/v1 route, so it only ever runs for a request
+// that already carries a currently-valid token — there is deliberately no
+// path to refresh an expired one, which keeps this endpoint exactly as safe
+// as any other authenticated route rather than needing its own grace-period
+// logic.
+func (h *Handler) Refresh(c *gin.Context) {
+	deviceID := c.GetString("device_id")
+	deviceName := c.GetString("device_name")
+
+	token, err := h.Auth.GenerateToken(deviceID, deviceName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"token":   token,
+		"message": "token refreshed",
+	})
+}
+
 func (h *Handler) ListContainers(c *gin.Context) {
 	containers, err := h.Docker.ListContainers(c.Request.Context())
 	if err != nil {
