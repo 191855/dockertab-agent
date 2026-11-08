@@ -87,7 +87,7 @@ Two variables are all most setups need: `DOCKERTAB_HOST` (your server's LAN IP, 
 
 ## Security
 
-- All endpoints except `/healthz` and `/api/v1/pair` require a valid JWT. Tokens expire after 180 days.
+- All endpoints except `/healthz` and `/api/v1/pair` require a valid JWT. Tokens expire after 180 days, or can be renewed via `/api/v1/refresh` while still valid.
 - API keys and JWT secrets are generated with `crypto/rand` on first run and stored at `0600`.
 - The pairing API key is only accessible via the QR code or the local config file, never returned in HTTP responses.
 - The Docker socket is mounted read-only inside the container.
@@ -116,6 +116,7 @@ If you'd rather skip the volume, just set `DOCKERTAB_API_KEY` and `DOCKERTAB_JWT
 
 | Method | Path | Description |
 |---|---|---|
+| `POST` | `/api/v1/refresh` | Exchange a valid JWT for a new one |
 | `GET` | `/api/v1/host` | Host system info |
 | `GET` | `/api/v1/containers` | List all containers |
 | `GET` | `/api/v1/containers/:id` | Single container details |
