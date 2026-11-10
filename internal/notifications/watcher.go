@@ -10,22 +10,27 @@ import (
 )
 
 type Watcher struct {
-	docker    docker.DockerClient
-	store     *TokenStore
-	client    *APNsClient
-	agentID   string
-	agentName string
-	sandbox   bool
+	docker         docker.DockerClient
+	store          *TokenStore
+	client         *APNsClient
+	agentID        string
+	agentName      string
+	sandbox        bool
+	relayConnected func() bool
 }
 
-func NewWatcher(dockerClient docker.DockerClient, store *TokenStore, client *APNsClient, agentID, agentName string, sandbox bool) *Watcher {
+// relayConnected reports whether the agent's relay link is currently up.
+// Registrations get mirrored to relay too, so relay already delivers the push
+// when it's reachable — this is just the fallback for when it's not.
+func NewWatcher(dockerClient docker.DockerClient, store *TokenStore, client *APNsClient, agentID, agentName string, sandbox bool, relayConnected func() bool) *Watcher {
 	return &Watcher{
-		docker:    dockerClient,
-		store:     store,
-		client:    client,
-		agentID:   agentID,
-		agentName: agentName,
-		sandbox:   sandbox,
+		docker:         dockerClient,
+		store:          store,
+		client:         client,
+		agentID:        agentID,
+		agentName:      agentName,
+		sandbox:        sandbox,
+		relayConnected: relayConnected,
 	}
 }
 
@@ -81,6 +86,10 @@ func (w *Watcher) Send(ctx context.Context, id, name, action string) {
 }
 
 func (w *Watcher) push(ctx context.Context, containerID, name, action string) {
+	if w.relayConnected != nil && w.relayConnected() {
+		return // relay handles it, avoid double-sending
+	}
+
 	displayHost := w.agentName
 	if displayHost == "" {
 		displayHost = "agent"
